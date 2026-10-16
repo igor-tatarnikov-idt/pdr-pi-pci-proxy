@@ -45,6 +45,8 @@ group_plain_provider() {
   check "plain provider accepts transaction" 200 '"status":"accepted"' \
     -X POST "$PLAIN_PROVIDER/create-transaction" -H 'content-type: application/json' -d "$SAMPLE_TX"
   check "plain provider balance" 200 '"balance":1000' "$PLAIN_PROVIDER/balance"
+  check "plain provider validate (account in query string)" 200 'true' \
+    "$PLAIN_PROVIDER/validate-transaction?bankAccountNumber=012345678901234567"
 }
 
 group_encrypted_provider() {
@@ -67,16 +69,25 @@ group_encrypted_provider() {
   check "decrypts to JSON with null recipientName" 400 "$invalid" -X POST "$url" -H "$h" -d "$(envelope "$null_recipient")"
   check "decrypts to JSON missing amount" 400 "$invalid" -X POST "$url" -H "$h" -d "$(envelope "$missing_amount")"
   check "encrypted provider balance" 200 '"balance":1000' "$ENC_PROVIDER/balance"
+  local vurl="$ENC_PROVIDER/validate-transaction" account='{"bankAccountNumber":"0123"}'
+  check "validate: valid encrypted request" 200 'true' -X POST "$vurl" -H "$h" -d "$(envelope "$account")"
+  check "validate: payload not base64" 400 "$invalid" -X POST "$vurl" -H "$h" -d '{"payload":"not-valid"}'
+  check "validate: plain unencrypted request" 400 "$invalid" -X POST "$vurl" -H "$h" -d "$account"
+  check "validate: empty body" 400 "$invalid" -X POST "$vurl" -H "$h"
+  check "validate: decrypts to JSON missing bankAccountNumber" 400 "$invalid" -X POST "$vurl" -H "$h" -d "$(envelope '{"foo":"bar"}')"
+  check "validate: decrypts to JSON with null bankAccountNumber" 400 "$invalid" -X POST "$vurl" -H "$h" -d "$(envelope '{"bankAccountNumber":null}')"
 }
 
 group_plain_adapter() {
   check "plain adapter create" 200 '"status":"accepted"' -X POST "$PLAIN_ADAPTER/create-transaction"
   check "plain adapter balance" 200 '"balance":1000' "$PLAIN_ADAPTER/balance"
+  check "plain adapter validate" 200 'true' -X POST "$PLAIN_ADAPTER/validate-transaction"
 }
 
 group_encrypted_adapter() {
   check "encrypted adapter create" 200 '"status":"accepted"' -X POST "$ENC_ADAPTER/create-transaction"
   check "encrypted adapter balance" 200 '"balance":1000' "$ENC_ADAPTER/balance"
+  check "encrypted adapter validate" 200 'true' -X POST "$ENC_ADAPTER/validate-transaction"
 }
 
 groups=("$@")

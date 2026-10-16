@@ -18,3 +18,6 @@ public sealed record Transaction(
     [property: JsonRequired] string SenderName,
     [property: JsonRequired] string RecipientName,
     [property: JsonRequired] string BankAccountNumber);
+
+/// <summary>The validate-transaction payload for the encrypted provider.</summary>
+public sealed record ValidateRequest([property: JsonRequired] string BankAccountNumber);

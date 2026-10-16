@@ -9,10 +9,10 @@ You call the adapters with curl and watch each app's console to see how a reques
 | App | Port | Role |
 |---|---|---|
 | Tokenizer | 5100 | `POST /detokenize` takes `{"token":"..."}` and always answers `{"value":"012345678901234567"}`, the raw account number |
-| PlainProvider | 5200 | `POST /create-transaction` logs whatever it receives; `GET /balance` |
-| EncryptedProvider | 5300 | `POST /create-transaction` expects `{"payload":"<base64>"}`; answers `400` if the payload is not a properly encrypted transaction; `GET /balance` |
-| PlainAdapter | 5400 | `POST /create-transaction` and `GET /balance`, calls PlainProvider |
-| EncryptedAdapter | 5500 | `POST /create-transaction` and `GET /balance`, calls EncryptedProvider |
+| PlainProvider | 5200 | `POST /create-transaction` logs whatever it receives; `GET /validate-transaction?bankAccountNumber=...` always answers `true` (the raw account number travels in the query string); `GET /balance` |
+| EncryptedProvider | 5300 | `POST /create-transaction` and `POST /validate-transaction` expect `{"payload":"<base64>"}`; they answer `400` if the payload is not a properly encrypted transaction (create) or `{"bankAccountNumber":"..."}` (validate); validate answers `true`; `GET /balance` |
+| PlainAdapter | 5400 | `POST /create-transaction`, `POST /validate-transaction` and `GET /balance`, calls PlainProvider |
+| EncryptedAdapter | 5500 | `POST /create-transaction`, `POST /validate-transaction` and `GET /balance`, calls EncryptedProvider |
 
 Every endpoint is anonymous. Requires the .NET 10 SDK.
 
@@ -27,21 +27,27 @@ everything. In another terminal:
 
 ```bash
 curl -i -X POST http://127.0.0.1:5400/create-transaction
+curl -i -X POST http://127.0.0.1:5400/validate-transaction
 curl -i http://127.0.0.1:5400/balance
 curl -i -X POST http://127.0.0.1:5500/create-transaction
+curl -i -X POST http://127.0.0.1:5500/validate-transaction
 curl -i http://127.0.0.1:5500/balance
 ```
 
-The create endpoints take no body: each adapter sends a hard-coded transaction (`T-001-plain` from the
-plain adapter, `T-002-encrypted` from the encrypted one).
+The create and validate endpoints take no body. Each adapter sends a hard-coded transaction on create
+(`T-001-plain` from the plain adapter, `T-002-encrypted` from the encrypted one). On validate it
+detokenizes the same placeholder token and sends the raw account number to its provider: in the query
+string of a `GET` for the plain provider, inside the encrypted payload of a `POST` for the encrypted one.
 
 ## What to look for in the logs
 
 - **PlainAdapter / EncryptedAdapter:** the call to the tokenizer with the placeholder token
   `Y000000000000001`, the raw account number that comes back, then the call to the provider.
-- **PlainProvider:** the request body as received, with the raw `bankAccountNumber`.
-- **EncryptedProvider:** the decrypted transaction, or `rejected: <reason>` for a request it could not
-  decrypt. The EncryptedAdapter also logs the `plaintext` it encrypted.
+- **PlainProvider:** the request body as received, with the raw `bankAccountNumber`. For validate, the
+  raw number shows up in the URL: `GET /validate-transaction?bankAccountNumber=...`.
+- **EncryptedProvider:** the decrypted transaction (or `decrypted validation request`), or
+  `rejected: <reason>` for a request it could not decrypt. The EncryptedAdapter also logs the
+  `plaintext` it encrypted.
 
 ## Checks
 
