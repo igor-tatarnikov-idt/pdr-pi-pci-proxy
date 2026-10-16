@@ -7,7 +7,8 @@ Source: PDR "Adapter PCI Proxy" (Confluence, Money Transfer space), Figure 1.
 ## Purpose
 
 A local sandbox of the part of Figure 1 that exists today: **adapter → tokenizer** and
-**adapter → provider**. The PCI Proxy, the Forwarder and the WillCall Gateway are not in it.
+**adapter → provider**. The PCI Proxy and the WillCall Gateway are not in it. Stage 2 (below) adds the
+Forwarder.
 
 This is the PDR's `pci-proxy:off` behaviour: the adapter detokenizes the bank account on its own
 and sends the raw account number to the provider. The sandbox lets the PDR author see that
@@ -28,9 +29,11 @@ Success looks like this:
 
 ## Out of scope
 
-- PCI Proxy, Forwarder, WillCall Gateway, the `pci-proxy:*` modes, PCI markers, `X-Proxy-*` headers.
+- PCI Proxy, WillCall Gateway, the `pci-proxy:shadow` and `pci-proxy:on` modes, PCI markers,
+  `X-Proxy-*` headers. (The Forwarder and the `off` and `egress` modes arrive in stage 2.)
 - Authentication: every endpoint in every application is anonymous.
-- Retries, timeouts, TLS, Docker.
+- Retries, timeouts, and TLS other than the encrypted provider's self-signed certificate (stage 2).
+  Docker and Podman are used for the Forwarder only.
 - Real provider recipes (signing, mTLS, field-level encryption). One whole-payload cipher stands in
   for the encrypting providers. The cipher is deliberately the simplest possible and is not part
   of the exercise.
@@ -206,6 +209,110 @@ validate with a valid encrypted request → 200 `true`, and with a payload that 
 unencrypted body, an empty body, and plaintext that is missing or has a `null` `bankAccountNumber` →
 400 with the problem title; and both adapters' `POST /validate-transaction` → 200 `true`.
 
+## Stage 2: Forwarder (Envoy), `PciProxy:Mode` and HTTPS
+
+Adds the PDR's Forwarder lane. With `PciProxy:Mode=egress` an adapter sends its provider traffic to an
+Envoy box that forwards it to the provider; with `off` it calls the provider directly, as before. The
+sandbox now covers both plain HTTP (PlainProvider) and HTTPS (EncryptedProvider).
+
+```
+off:     adapter ──────────────────────────────► provider
+egress:  adapter ─► Forwarder (Envoy, :5600) ───► provider      (tokenizer calls stay direct)
+                    HTTP  : absolute-form request, forwarded as is
+                    HTTPS : CONNECT tunnel, TLS stays between adapter and provider
+```
+
+### HTTPS for the EncryptedProvider
+
+- It serves **HTTPS only** on `https://127.0.0.1:5300`, with a certificate loaded from the PEM files
+  `certs/sandbox.crt` and `certs/sandbox.key` through Kestrel's `Endpoints` configuration (`Urls` is
+  dropped for this app). The PlainProvider stays plain HTTP on `:5200`.
+- `scripts/gen-cert.sh` creates a self-signed certificate with openssl (subject alternative names
+  `encrypted-provider.localhost`, `localhost` and `127.0.0.1`) and does nothing if the files already
+  exist. `certs/` is git-ignored and `run-all.sh` calls the script first. Nothing is installed into any
+  system or keychain trust store.
+- The adapters trust that certificate explicitly: `Provider:TrustedCertificate` (a path to
+  `certs/sandbox.crt`) is added as a custom root for the provider client, and the host name is still
+  verified. Any other certificate is rejected.
+- `scripts/smoke.sh` calls the encrypted provider over HTTPS with `curl --cacert certs/sandbox.crt`.
+
+### Names
+
+- The adapters' provider URLs become `http://plain-provider.localhost:5200` and
+  `https://encrypted-provider.localhost:5300`. macOS resolves every `*.localhost` name to loopback, so
+  direct calls work unchanged. The Forwarder container cannot see the Mac's loopback, so it resolves
+  the same names through `--add-host` entries that point at the Mac host. This mirrors the PDR's
+  hostAliases, which the Forwarder must share with the adapters. The tokenizer stays at
+  `http://127.0.0.1:5100`.
+
+### Forwarder
+
+- **Envoy 1.36.9**, the PDR's version. The image `docker.io/envoyproxy/envoy:v1.36.9` is already in the
+  local Podman storage. Config: `forwarder/envoy.yaml`. It runs as the Podman container
+  `sandbox-forwarder`, with the proxy listener published on `127.0.0.1:5600` and the admin interface
+  on `127.0.0.1:5601` (container port 9901).
+- `--add-host plain-provider.localhost:<H>` and `--add-host encrypted-provider.localhost:<H>`, where
+  `<H>` is what `host.containers.internal` resolves to inside the container (192.168.127.254 on this
+  machine). `host-gateway` does not work in this Podman setup, so `scripts/forwarder.sh` (which
+  `run-all.sh` calls) looks `<H>` up with `getent` in the same image.
+- One HTTP listener with Envoy's dynamic forward proxy: absolute-form requests (`allow_absolute_url`)
+  for HTTP providers, and `CONNECT` tunnels for HTTPS providers. TLS is never terminated, so the
+  adapter's TLS session ends at the provider. No logic, and no headers added to the provider request
+  or response (request-id generation off, Envoy headers suppressed, no `X-Forwarded-*`). The access log
+  goes to stdout.
+- Access log details. The format ends with ` ua=%REQ(USER-AGENT)%`, so the adapters' requests (.NET's
+  `HttpClient` sends no User-Agent, which shows as `ua=-`) can be told from curl's.
+  `access_log_options.flush_log_on_tunnel_successfully_established` logs a `CONNECT` when the tunnel
+  opens (and again, with the same start time, when it closes), so a tunnel shows in the log at once.
+  The container runs Envoy with `--file-flush-interval-msec 100`, because Envoy otherwise buffers its
+  stdout access log for about 10 s.
+- `run-all.sh` starts it as `[Forwarder]`, removes a stale container first, and stops it on exit. If
+  `podman` or its machine is unavailable it prints a warning and continues: `off` mode needs no
+  Forwarder.
+
+### `PciProxy:Mode`
+
+- In each adapter's `appsettings.json`: `PciProxy:Mode` is `off` (the default) or `egress`, and
+  `PciProxy:ForwarderUrl` is `http://127.0.0.1:5600`. The names follow the PDR's `pci-proxy:off|egress`.
+  Any other value, including the later `shadow` and `on`, stops the adapter at startup with a clear
+  message. In `egress` an empty or non-absolute-http `PciProxy:ForwarderUrl` stops the adapter at
+  startup too (otherwise an empty URL would silently go direct).
+- `off` is unchanged. In `egress` the adapter's provider `HttpClient` uses the Forwarder as its proxy,
+  so every provider call (create, validate and balance) leaves as an absolute-form request (HTTP) or a
+  `CONNECT` tunnel (HTTPS). The tokenizer client never uses the proxy, because IDT's own services are
+  not provider traffic. The adapter logs the mode and the Forwarder URL at startup, and its outbound
+  log lines keep showing the logical provider URL.
+- Switching mode: `PciProxy__Mode=egress scripts/run-all.sh`.
+- One helper in `Sandbox.Shared` applies the mode and the certificate trust to the provider client, so
+  the two adapters do not carry copies of the wiring.
+
+### Verification
+
+- Every existing adapter check in `scripts/smoke.sh` passes unchanged in both modes: the suite is run
+  once per mode.
+- A `forwarder` smoke group checks that Envoy's admin interface is ready and that the proxy forwards a
+  plain-HTTP and a `CONNECT` request. It then reads the Forwarder's access log (`podman logs`): with
+  `PCI_PROXY_MODE=egress` set for the run, the adapters' create, validate and balance calls to the plain
+  provider and a `CONNECT` to the encrypted provider show in it, and without it they do not. The
+  adapters' lines are the ones that end in `ua=-`, which tells them apart from the group's own curl
+  requests (`ua=curl/...`). The checks look only at the lines after a `before` mark taken just before
+  the adapter calls; the `CONNECT` is searched in the whole log, because a pooled tunnel may be reused.
+- One-off checks, not part of the smoke script: a raw capture (a `nc` listener standing in for a
+  provider) shows no headers added by Envoy; an invalid `PciProxy:Mode` makes the adapter exit non-zero
+  with the message; an adapter rejects a provider certificate other than the sandbox one.
+
+### Points confirmed
+
+The PDR author confirmed these points when the spec was approved.
+
+1. **`*.localhost` names with `--add-host` aliases** for the providers, instead of putting
+   `host.containers.internal` in the URLs (the Mac cannot resolve that name, so direct mode would break).
+2. **HTTPS only on the EncryptedProvider**, with a self-signed certificate that the adapters trust by
+   explicit path, and nothing added to any keychain.
+3. **Tokenizer calls stay direct** in both modes.
+4. **`shadow` and `on` are rejected at startup** for now.
+5. **A missing Podman only warns**: `run-all.sh` carries on and the sandbox works in `off` mode.
+
 ## Confirmed decisions
 
 1. **Adapters call the tokenizer, not the providers.** Each adapter gets the raw account number from
@@ -217,3 +324,7 @@ unencrypted body, an empty body, and plaintext that is missing or has a `null` `
 4. **The cipher is AES-CBC with a fixed key and IV.** It is unauthenticated, so a wrong payload is
    caught by the padding check and the `Transaction` validation.
 5. **Classic `.sln`** instead of the .NET 10 default `.slnx`. **.NET 10** as the target framework.
+6. **Envoy runs as a Podman container.** The image `docker.io/envoyproxy/envoy:v1.36.9` is already in
+   the local Podman storage.
+7. **Both HTTP and HTTPS are covered.** The PlainProvider (HTTP) is forwarded as plain requests and the
+   EncryptedProvider (HTTPS) through a `CONNECT` tunnel.

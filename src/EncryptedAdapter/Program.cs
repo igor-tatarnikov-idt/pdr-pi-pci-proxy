@@ -6,14 +6,17 @@ using Sandbox.Shared;
 const string BankAccountToken = "Y000000000000001";
 
 var builder = WebApplication.CreateBuilder(args);
+var pciProxyMode = builder.Configuration.GetPciProxyMode(); // stops the app on an invalid PciProxy:Mode
 
 builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configuration.GetBaseUri("Tokenizer:BaseUrl"))
     .AddOutboundLogging("EncryptedAdapter");
 builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configuration.GetBaseUri("Provider:BaseUrl"))
-    .AddOutboundLogging("EncryptedAdapter");
+    .AddOutboundLogging("EncryptedAdapter")
+    .ConfigureProviderHandler(builder.Configuration, builder.Environment.ContentRootPath);
 
 var app = builder.Build();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EncryptedAdapter");
+log.LogPciProxyMode(pciProxyMode, builder.Configuration);
 
 // Base64 contains '+'; relaxed escaping keeps it as '+' so the envelope in the logs can be pasted into openssl.
 var envelopeOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web) { Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
