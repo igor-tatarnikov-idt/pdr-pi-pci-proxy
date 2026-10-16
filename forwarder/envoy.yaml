@@ -1,0 +1,64 @@
+admin:
+  address: { socket_address: { address: 0.0.0.0, port_value: 9901 } }
+static_resources:
+  listeners:
+  - name: forwarder
+    address: { socket_address: { address: 0.0.0.0, port_value: 5600 } }
+    filter_chains:
+    - filters:
+      - name: envoy.filters.network.http_connection_manager
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+          stat_prefix: forwarder
+          http_protocol_options: { allow_absolute_url: true }
+          generate_request_id: false
+          skip_xff_append: true
+          server_header_transformation: PASS_THROUGH
+          upgrade_configs:
+          - upgrade_type: CONNECT
+          access_log_options: { flush_log_on_tunnel_successfully_established: true }
+          access_log:
+          - name: envoy.access_loggers.stdout
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+              log_format:
+                text_format_source:
+                  inline_string: "[%START_TIME%] %REQ(:METHOD)% %REQ(:AUTHORITY)%%REQ(:PATH)% -> %UPSTREAM_HOST% %RESPONSE_CODE% ua=%REQ(USER-AGENT)%\n"
+          route_config:
+            name: all
+            virtual_hosts:
+            - name: all
+              domains: ["*"]
+              request_headers_to_remove: ["x-forwarded-proto"]
+              routes:
+              - match: { connect_matcher: {} }
+                route:
+                  cluster: forward_proxy
+                  upgrade_configs:
+                  - upgrade_type: CONNECT
+                    connect_config: {}
+              - match: { prefix: "/" }
+                route: { cluster: forward_proxy }
+          http_filters:
+          - name: envoy.filters.http.dynamic_forward_proxy
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.dynamic_forward_proxy.v3.FilterConfig
+              dns_cache_config: &dns
+                name: forward_proxy_cache
+                dns_lookup_family: V4_ONLY
+                typed_dns_resolver_config:
+                  name: envoy.network.dns_resolver.getaddrinfo
+                  typed_config:
+                    "@type": type.googleapis.com/envoy.extensions.network.dns_resolver.getaddrinfo.v3.GetAddrInfoDnsResolverConfig
+          - name: envoy.filters.http.router
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+              suppress_envoy_headers: true
+  clusters:
+  - name: forward_proxy
+    lb_policy: CLUSTER_PROVIDED
+    cluster_type:
+      name: envoy.clusters.dynamic_forward_proxy
+      typed_config:
+        "@type": type.googleapis.com/envoy.extensions.clusters.dynamic_forward_proxy.v3.ClusterConfig
+        dns_cache_config: *dns
