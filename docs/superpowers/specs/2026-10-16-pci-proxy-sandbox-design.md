@@ -184,6 +184,28 @@ framework's default `500` applies. There are no retries anywhere.
 Whoever runs it then reads the console to confirm the log content: the plain provider logs the raw
 account number, and the encrypted provider logs the decrypted transaction.
 
+## Stage 1: validate-transaction flow
+
+Added next to the create flow. The tokenizer, the cipher and the hard-coded bank account token
+(`Y000000000000001`) are unchanged. The flow exists to cover a real-life provider that takes the raw
+bank account number in the **query string** of a `GET`.
+
+| App | Endpoint | Behaviour |
+|---|---|---|
+| PlainProvider | `GET /validate-transaction?bankAccountNumber=<raw>` | The raw account number travels in the query string. Always returns `200 true`. The request log shows it in the URL. |
+| EncryptedProvider | `POST /validate-transaction` | Expects `{"payload":"<base64>"}` whose plaintext is `{"bankAccountNumber":"<raw>"}`. Returns `200 true` for a properly encrypted request, and the same `400` problem-details as create otherwise, including a missing or `null` `bankAccountNumber`. |
+| PlainAdapter | `POST /validate-transaction` | No request body. Detokenizes the token, then calls the plain provider with `GET validate-transaction?bankAccountNumber=<URL-escaped raw>` and passes the response through. |
+| EncryptedAdapter | `POST /validate-transaction` | No request body. Detokenizes the token, encrypts `{"bankAccountNumber":"<raw>"}`, posts the envelope to the encrypted provider and passes the response through. |
+
+`ValidateRequest(BankAccountNumber)` is the new shared DTO. The encrypted provider reads, decrypts and
+parses both create and validate requests with one helper, so the two endpoints reject improper input
+identically and log the same reasons.
+
+`scripts/smoke.sh` gains: plain provider validate (query string) → 200 `true`; encrypted provider
+validate with a valid encrypted request → 200 `true`, and with a payload that is not base64, an
+unencrypted body, an empty body, and plaintext that is missing or has a `null` `bankAccountNumber` →
+400 with the problem title; and both adapters' `POST /validate-transaction` → 200 `true`.
+
 ## Confirmed decisions
 
 1. **Adapters call the tokenizer, not the providers.** Each adapter gets the raw account number from
