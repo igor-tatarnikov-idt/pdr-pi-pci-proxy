@@ -153,12 +153,14 @@ group_forwarder() {
 
   # Which way the adapters reach the providers. The Forwarder log is that of the running container: restart it (as
   # run-all.sh does) when switching PCI_PROXY_MODE, or lines from an earlier mode are still in it.
-  local create='POST plain-provider\.localhost:5200/create-transaction'
-  local validate='GET plain-provider\.localhost:5200/validate-transaction\?bankAccountNumber=012345678901234567'
+  # The access log is JSON, one object per line, its keys in alphabetical order (authority, from, id, method, path, status, ...).
+  local plain='"authority":"plain-provider\.localhost:5200".*'
+  local create="$plain"'"method":"POST","path":"/create-transaction"'
+  local validate="$plain"'"method":"GET","path":"/validate-transaction\?bankAccountNumber=012345678901234567"'
   # In 'on' the adapter never has the raw number, so a pattern that names it could not match whatever happened: any validate.
-  local validate_any='GET plain-provider\.localhost:5200/validate-transaction'
-  local balance='GET plain-provider\.localhost:5200/balance'
-  local connect='CONNECT encrypted-provider\.localhost:5300'
+  local validate_any="$plain"'"method":"GET","path":"/validate-transaction'
+  local balance="$plain"'"method":"GET","path":"/balance"'
+  local connect='"authority":"encrypted-provider\.localhost:5300".*"method":"CONNECT"'
   local before new all
   before=$(podman logs sandbox-forwarder 2>&1 | wc -l)
   curl -s -o /dev/null -X POST "$PLAIN_ADAPTER/create-transaction"
@@ -171,10 +173,10 @@ group_forwarder() {
   new=$(tail -n +$((before + 1)) <<< "$all")
 
   # The group's own curl checks above also pass through the Forwarder. .NET's HttpClient sends no User-Agent, which
-  # the access log shows as "ua=-", so only those lines are the adapters'.
+  # the access log shows as "ua":"-", so only those lines are the adapters'.
   local adapter_new adapter_all
-  adapter_new=$(grep -E ' ua=-$' <<< "$new")
-  adapter_all=$(grep -E ' ua=-$' <<< "$all")
+  adapter_new=$(grep -F '"ua":"-"' <<< "$new")
+  adapter_all=$(grep -F '"ua":"-"' <<< "$all")
   case $PCI_PROXY_MODE in
     egress)
       check_log "egress: plain create goes through the Forwarder" present "$create" "$adapter_new"

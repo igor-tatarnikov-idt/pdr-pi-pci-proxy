@@ -7,15 +7,15 @@ using Microsoft.Extensions.Logging.Console;
 namespace Sandbox.Shared;
 
 /// <summary>
-/// The sandbox's console format, one line per entry: <c>HH:mm:ss Category id=&lt;request id&gt; trace=&lt;trace id&gt; message</c>. No level and
+/// The readable console format (<c>Logging:Console:FormatterName</c> <c>sandbox-text</c>), one line per entry: <c>HH:mm:ss Category id=&lt;request id&gt; trace=&lt;trace id&gt; message</c>. No level and
 /// no event id (the stock formatter's <c>info:</c> and <c>[0]</c>). The request id (<see cref="RequestId"/>) and the W3C trace id
 /// (the current <see cref="Activity"/>, which ASP.NET Core starts per request and HttpClient passes on in <c>traceparent</c>) are
 /// read from the request being handled, so every line written while handling one has them, the framework's included; a line
 /// outside a request (startup) has neither. Line breaks in the message become <c>\n</c>, so that one entry is one line.
 /// </summary>
-public sealed class SandboxConsoleFormatter() : ConsoleFormatter(Name)
+public sealed class SandboxTextFormatter() : ConsoleFormatter(Name)
 {
-    public const string Name = "sandbox";
+    public const string Name = "sandbox-text";
 
     public override void Write<TState>(in LogEntry<TState> entry, IExternalScopeProvider? scopeProvider, TextWriter textWriter)
     {
@@ -49,11 +49,4 @@ public sealed class SandboxConsoleFormatter() : ConsoleFormatter(Name)
             textWriter.WriteLine(entry.Exception.ToString());
         }
     }
-}
-
-public static class SandboxLoggingExtensions
-{
-    /// <summary>Registers <see cref="SandboxConsoleFormatter"/>; <c>Logging:Console:FormatterName</c> in appsettings.json selects it.</summary>
-    public static ILoggingBuilder AddSandboxConsoleFormatter(this ILoggingBuilder logging) =>
-        logging.AddConsoleFormatter<SandboxConsoleFormatter, ConsoleFormatterOptions>();
 }

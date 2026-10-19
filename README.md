@@ -254,20 +254,30 @@ proxy keeps nothing.
 
 ## What to look for in the logs
 
-Log format and the ids. A line is `HH:mm:ss Category id=<request id> trace=<trace id> message`: no level and no event id. The message is
-`key=value` pairs (a free-text `body=` comes last) of a few kinds: `in` (a request received), `out` and `res` (a call made, and its answer;
-the adapters), and the PCI Proxy's `send` and `will-call` summaries. The Forwarder's line has its own shape:
-`[time] id=<request id> traceparent=<traceparent> from=...`. `id` and `trace` are on **every** line written while a request is handled, the
-framework's (YARP's `Proxying to ...`) included, and absent from startup lines.
+Log format and the ids. Every app writes structured logs: one JSON object per line, with the values of the log call as fields of
+their own type, not in the text:
 
-- `id` is the request id. The first app that sees a request makes it up (or keeps a valid `X-Request-Id` that you send with curl: 1 to 64
+```json
+{"ts":"2026-10-19T20:28:40.578Z","category":"PlainAdapter","requestId":"demo-1","traceId":"5b286e434a94534e649695542ade5de1","message":"in from={Origin} method={Method} target={Target} body={Body}","origin":"127.0.0.1:56646","method":"POST","target":"/create-transaction","body":""}
+```
+
+`message` is the message template (the same for every entry of a kind: `in`, `out`, `res`, and the PCI Proxy's `send`, `will-call` and
+`will-call-rewrite`), so that entries group by it; the values (`origin`, `method`, `status`, `tokenizerMs`, ...) are the other fields, and a
+number stays a number. `requestId` and `traceId` (below) are on **every** line written while a request is handled, the framework's (YARP's
+`Proxying to ...`) included, and absent from startup lines. There is no log level. The Forwarder's access log is JSON too, with the same ids:
+`{"authority":"plain-provider.localhost:5200","from":"192.168.127.1:49715","id":"demo-fwd-2","method":"GET","path":"/balance","status":200,"traceparent":"00-...","ts":"...","ua":"-","upstream":"..."}`
+(Envoy writes the keys in alphabetical order). To read the lines as text instead, start the apps with
+`Logging__Console__FormatterName=sandbox-text`: `HH:mm:ss Category id=<request id> trace=<trace id> message` with the values filled in.
+Pipe the JSON through `jq` to filter it, for example `jq -c 'select(.requestId=="demo-1")'`.
+
+- `requestId` (`id` in the Forwarder) is the request id. The first app that sees a request makes it up (or keeps a valid `X-Request-Id` that you send with curl: 1 to 64
   letters, digits, `.`, `-`, `_`; a bad one is replaced and never logged) and passes it on in `X-Request-Id` to every call it makes. The PCI Proxy
   does not add the header to what the provider receives; the adapter's own `X-Request-Id` goes on with the other headers.
-- `trace` is the W3C trace id. .NET starts it for each request and `HttpClient` passes it on in `traceparent`, so it is the same in the adapter, the PCI Proxy,
+- `traceId` (`traceparent` in the Forwarder) is the W3C trace id. .NET starts it for each request and `HttpClient` passes it on in `traceparent`, so it is the same in the adapter, the PCI Proxy,
   the Tokenizer and the provider. Through the PCI Proxy the provider gets the adapter's `traceparent` and `X-Request-Id` as ordinary headers (the proxy's own
   provider client adds none), so the provider's lines show the adapter's ids. The Forwarder logs the `traceparent` of the call it passes on.
 
-`grep <id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the PCI Proxy, the Tokenizer, the provider and the Forwarder.
+`grep <request id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the PCI Proxy, the Tokenizer, the provider and the Forwarder.
 
 Where a request came from: the providers, the Tokenizer, the adapters, the PCI Proxy and the Forwarder log the address and port of the peer that opened
 the connection (`from=127.0.0.1:54321`).
