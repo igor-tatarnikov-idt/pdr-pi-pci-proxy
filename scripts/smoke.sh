@@ -173,10 +173,10 @@ group_forwarder() {
   new=$(tail -n +$((before + 1)) <<< "$all")
 
   # The group's own curl checks above also pass through the Forwarder. .NET's HttpClient sends no User-Agent, which
-  # the access log shows as "ua":"-", so only those lines are the adapters'.
+  # the access log shows as "ua":null, so only those lines are the adapters'.
   local adapter_new adapter_all
-  adapter_new=$(grep -F '"ua":"-"' <<< "$new")
-  adapter_all=$(grep -F '"ua":"-"' <<< "$all")
+  adapter_new=$(grep -F '"ua":null' <<< "$new")
+  adapter_all=$(grep -F '"ua":null' <<< "$all")
   case $PCI_PROXY_MODE in
     egress)
       check_log "egress: plain create goes through the Forwarder" present "$create" "$adapter_new"
