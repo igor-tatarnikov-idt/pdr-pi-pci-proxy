@@ -264,9 +264,8 @@ framework's (YARP's `Proxying to ...`) included, and absent from startup lines.
   letters, digits, `.`, `-`, `_`; a bad one is replaced and never logged) and passes it on in `X-Request-Id` to every call it makes. The PCI Proxy
   does not add the header to what the provider receives; the adapter's own `X-Request-Id` goes on with the other headers.
 - `trace` is the W3C trace id. .NET starts it for each request and `HttpClient` passes it on in `traceparent`, so it is the same in the adapter, the PCI Proxy,
-  the Tokenizer and the provider that the adapter reaches directly. The PCI Proxy's call to the provider carries no `traceparent` (it
-  adds no header the adapter did not send), so a provider behind the proxy logs `id` and `trace` of the adapter's request only if the adapter's own headers
-  carried them; the proxy's own line has both. Each call the Forwarder passes on shows the caller's `traceparent`.
+  the Tokenizer and the provider. Through the PCI Proxy the provider gets the adapter's `traceparent` and `X-Request-Id` as ordinary headers (the proxy's own
+  provider client adds none), so the provider's lines show the adapter's ids. The Forwarder logs the `traceparent` of the call it passes on.
 
 `grep <id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the PCI Proxy, the Tokenizer, the provider and the Forwarder.
 
