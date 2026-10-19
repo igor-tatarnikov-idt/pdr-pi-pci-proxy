@@ -8,4 +8,8 @@
     <ProjectReference Include="..\Sandbox.Shared\Sandbox.Shared.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Yarp.ReverseProxy" Version="2.3.0" />
+  </ItemGroup>
+
 </Project>

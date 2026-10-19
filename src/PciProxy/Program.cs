@@ -20,6 +20,12 @@ ProviderProfiles.Add(builder.Services, builder.Configuration, builder.Environmen
 builder.Services.AddSingleton<TokenizerClient>();
 builder.Services.AddSingleton<SendPipeline>();
 
+// The Will Call route: YARP proxies /will-call/** to the Will Call adapter and WillCallGateway rewrites its JSON responses.
+builder.Services.AddSingleton<MarkerResponseRewriter>();
+builder.Services.AddReverseProxy()
+    .LoadFromConfig(builder.Configuration.GetSection("ReverseProxy"))
+    .AddTransforms(WillCallGateway.AddTransforms);
+
 var app = builder.Build();
 
 // Any method; the tenant is not used.
@@ -31,24 +37,10 @@ app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext cont
     }
     catch (ProxyException e)
     {
-        await WriteProblemAsync(context, e);
+        await ProblemResponse.WriteAsync(context, e);
     }
 });
 
-app.Run();
+app.MapReverseProxy(pipeline => pipeline.Use(WillCallGateway.RejectMarkersAsync));
 
-// A proxy failure is problem details plus the headers that say whether the provider may have seen the request.
-static async Task WriteProblemAsync(HttpContext context, ProxyException e)
-{
-    var response = context.Response;
-    if (response.HasStarted)
-    {
-        context.Abort();
-        return;
-    }
-    response.Headers.Clear(); // whatever of the provider's response was already set
-    response.ContentLength = null;
-    response.Headers["X-Proxy-Outcome"] = e.Outcome;
-    response.Headers["X-Proxy-Code"] = e.Code;
-    await Results.Problem(statusCode: e.Status, title: e.Code, detail: e.Detail).ExecuteAsync(context);
-}
+app.Run();
