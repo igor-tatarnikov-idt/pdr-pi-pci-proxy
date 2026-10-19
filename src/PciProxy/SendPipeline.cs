@@ -62,7 +62,8 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
 
         var url = ReadUrlHeader(incoming);
         var timeoutMs = ReadTimeoutHeader(incoming);
-        var headers = incoming.Headers.Where(header => !IsNotForwarded(header.Key))
+        var connectionTokens = HttpRules.ConnectionTokens(incoming.Headers.Connection.Select(value => value!));
+        var headers = incoming.Headers.Where(header => !IsNotForwarded(header.Key) && !connectionTokens.Contains(header.Key))
             .SelectMany(header => header.Value.Select(value => (Name: header.Key, Value: value!))).ToList();
         if (headers.Any(header => !Ascii.IsValid(header.Value)))
         {
@@ -116,7 +117,8 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
             contentHeaders.RemoveAll(header => IsContentType(header.Name));
             contentHeaders.Add(("Content-Type", contentType));
         }
-        if (sentBody.Length > 0 || contentHeaders.Count > 0)
+        // A GET or the like without a body goes without content, so that no Content-Length: 0 is written for it (RFC 9110 section 8.6).
+        if (sentBody.Length > 0 || (contentHeaders.Count > 0 && !HasNoRequestContent(incoming.Method)))
         {
             request.Content = new ByteArrayContent(sentBody);
             foreach (var (name, value) in contentHeaders)
@@ -168,14 +170,16 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
     private static async Task WriteResponseAsync(HttpResponse outgoing, HttpResponseMessage response, byte[] body, Timings timings, CancellationToken cancellationToken)
     {
         outgoing.StatusCode = (int)response.StatusCode;
+        var connectionTokens = HttpRules.ConnectionTokens(response.Headers.Connection);
         foreach (var (name, values) in response.Headers.Concat(response.Content.Headers))
         {
-            if (!IsHopByHop(name))
+            if (!IsHopByHop(name) && !connectionTokens.Contains(name))
             {
                 outgoing.Headers.Append(name, values.ToArray());
             }
         }
         outgoing.Headers["X-Proxy-Outcome"] = "Forwarded";
+        outgoing.Headers.Append("Via", HttpRules.Via); // after the provider's own Via entries (RFC 9110 section 7.6.3)
         outgoing.Headers.Append("Server-Timing", string.Join(", ",
             new[] { ServerTiming("tokenizer", timings.Tokenizer), ServerTiming("provider", timings.Provider) }.Where(entry => entry is not null)));
 
@@ -238,6 +242,9 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
     private static bool IsNotForwarded(string name) =>
         IsHopByHop(name) || name.StartsWith("X-Proxy-", StringComparison.OrdinalIgnoreCase)
         || name.Equals("Host", StringComparison.OrdinalIgnoreCase) || name.Equals("Content-Length", StringComparison.OrdinalIgnoreCase);
+
+    private static bool HasNoRequestContent(string method) =>
+        HttpMethods.IsGet(method) || HttpMethods.IsHead(method) || HttpMethods.IsOptions(method) || HttpMethods.IsTrace(method);
 
     private static bool IsContentType(string name) => name.Equals("Content-Type", StringComparison.OrdinalIgnoreCase);
 

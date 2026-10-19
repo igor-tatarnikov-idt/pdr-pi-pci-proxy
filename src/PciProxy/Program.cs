@@ -41,6 +41,11 @@ app.Use((context, next) =>
 // Any method; the tenant is not used.
 app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext context, string providerId, SendPipeline pipeline) =>
 {
+    if (HttpRules.IsTrace(context.Request.Method))
+    {
+        await HttpRules.WriteMethodNotAllowedAsync(context);
+        return;
+    }
     try
     {
         await pipeline.HandleAsync(context, providerId);

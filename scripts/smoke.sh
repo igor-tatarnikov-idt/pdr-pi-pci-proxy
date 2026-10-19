@@ -293,6 +293,15 @@ group_will_call() {
   check "will-call swagger UI via the PCI Proxy" 200 'swagger' -L "$PCI_PROXY/will-call/swagger"
   check "will-call swagger document names the /will-call server" 200 '"url": "/will-call"' "$PCI_PROXY/will-call/swagger/v1/swagger.json"
   check "will-call: unknown route passes through" 404 '' "$PCI_PROXY/will-call/no-such-route"
+  # RFC 9110 / 9111 rules of the route: a response with raw numbers is not cacheable, the proxy adds its Via, TRACE is refused with Allow,
+  # and a Range request is answered with the whole response (the proxy drops the header), never a rewritten fragment.
+  local headers
+  headers=$(curl -s -D - -o /dev/null -H 'Range: bytes=0-10' "$PCI_PROXY/will-call/lookup-transactions" | tr -d '\r')
+  check_log "will-call: raw response is no-store" present '^[Cc]ache-[Cc]ontrol: no-store' "$headers"
+  check_log "will-call: response carries Via" present '^[Vv]ia: 1\.1 pci-proxy' "$headers"
+  check_log "will-call: Range is not honoured (200, not 206)" present '^HTTP/[0-9.]+ 200' "$headers"
+  check "will-call: TRACE is refused" 405 'METHOD_NOT_ALLOWED' -X TRACE "$PCI_PROXY/will-call/lookup-transactions"
+  check "send: TRACE is refused" 405 'METHOD_NOT_ALLOWED' -X TRACE "$SEND/plain-provider/send" -H 'x-proxy-url: http://plain-provider.localhost:5200/balance'
   check "will-call: marker in the query is refused" 400 'MARKER_SYNTAX' "$PCI_PROXY/will-call/lookup-transactions?x=%7B%7Bpci%3Aba%3AY000000000000002%7D%7D"
 }
 
