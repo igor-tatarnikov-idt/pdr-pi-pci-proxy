@@ -43,12 +43,12 @@ prints a warning (`warning: Forwarder not started (...)`) and carries on without
 another terminal:
 
 ```bash
-curl -i -X POST http://127.0.0.1:5400/create-transaction
-curl -i -X POST http://127.0.0.1:5400/validate-transaction
-curl -i http://127.0.0.1:5400/balance
-curl -i -X POST http://127.0.0.1:5500/create-transaction
-curl -i -X POST http://127.0.0.1:5500/validate-transaction
-curl -i http://127.0.0.1:5500/balance
+curl -i -X POST http://plain-adapter.localhost:5400/create-transaction
+curl -i -X POST http://plain-adapter.localhost:5400/validate-transaction
+curl -i http://plain-adapter.localhost:5400/balance
+curl -i -X POST http://encrypted-adapter.localhost:5500/create-transaction
+curl -i -X POST http://encrypted-adapter.localhost:5500/validate-transaction
+curl -i http://encrypted-adapter.localhost:5500/balance
 ```
 
 The create and validate endpoints take no body. Each adapter sends a hard-coded transaction on create
@@ -67,14 +67,34 @@ certificate is rejected. The PCI Proxy pins the same file for the encrypted prov
 below). To call the provider yourself:
 
 ```bash
-curl --cacert certs/sandbox.crt https://127.0.0.1:5300/balance
+curl --cacert certs/sandbox.crt https://encrypted-provider.localhost:5300/balance
 ```
 
 The adapters reach the providers by `plain-provider.localhost` and `encrypted-provider.localhost`.
 macOS resolves every `*.localhost` name to loopback, so direct calls (and the PCI Proxy's calls) need
 nothing. The Forwarder container cannot see the Mac's loopback, so `scripts/forwarder.sh` gives it the
 same two names, pointing at the Mac host (the Forwarder and the adapters have to agree on the provider
-names). The tokenizer stays at `http://127.0.0.1:5100` and is never called through the Forwarder.
+names). The tokenizer stays at `http://tokenizer.localhost:5100` and is never called through the Forwarder.
+
+## Host names
+
+Every app has a readable name under `.localhost`, which macOS (and most systems) resolve to loopback without any setup. The apps still
+listen on `127.0.0.1` (`Urls` in each `appsettings.json`), and the apps reach each other by name:
+
+| Name | Port | App |
+|---|---|---|
+| `tokenizer.localhost` | 5100 | Tokenizer |
+| `plain-provider.localhost` | 5200 | PlainProvider |
+| `encrypted-provider.localhost` | 5300 | EncryptedProvider |
+| `plain-adapter.localhost` | 5400 | PlainAdapter |
+| `encrypted-adapter.localhost` | 5500 | EncryptedAdapter |
+| `forwarder.localhost` | 5600 (proxy), 5601 (admin) | Forwarder |
+| `pci-proxy.localhost` | 5700 | PCI Proxy |
+| `will-call-adapter.localhost` | 5800 | WillCallAdapter |
+
+Only the two provider names are also known inside the Forwarder container (`scripts/forwarder.sh` gives it those two), because the Forwarder
+reaches nothing else. The names are in `appsettings.json` (`Tokenizer:BaseUrl`, `PciProxy:ForwarderUrl`, `PciProxy:ProxyUrl`, the Will Call
+cluster address in `ReverseProxy`) and in `scripts/smoke.sh`; `127.0.0.1` still works everywhere.
 
 ## The modes: `off`, `egress` and `on`
 
@@ -84,7 +104,7 @@ casing) says how the adapter reaches its provider:
 | Mode | What the adapter does |
 |---|---|
 | `off` (default) | Detokenizes the account number through the tokenizer and calls the provider directly with the raw number. Today's flow. |
-| `egress` | The same, but every provider call (create, validate and balance) goes through the Forwarder at `PciProxy:ForwarderUrl` (`http://127.0.0.1:5600`). |
+| `egress` | The same, but every provider call (create, validate and balance) goes through the Forwarder at `PciProxy:ForwarderUrl` (`http://forwarder.localhost:5600`). |
 | `on` | Never calls the tokenizer. It puts the marker `{{pci:ba:Y000000000000001}}` where the raw account number was. A request that carries a marker is re-sent to the PCI Proxy, which detokenizes it and calls the provider; a request without one (balance) goes through the Forwarder, as in `egress`. |
 
 Any other value, `shadow` included, stops the adapter at startup with
@@ -122,7 +142,7 @@ string carries it URL-encoded (`bankAccountNumber=%7B%7Bpci%3Aba%3AY000000000000
 EncryptedAdapter sends plain JSON that contains the marker, for create and validate: it does not encrypt,
 because the proxy's `encrypt` hook does. The adapter's provider call (the same method, headers, body and
 content type) is re-sent to
-`http://127.0.0.1:5700/api/t/sandbox/providers/<provider id>/send` (`PciProxy:ProxyUrl`,
+`http://pci-proxy.localhost:5700/api/t/sandbox/providers/<provider id>/send` (`PciProxy:ProxyUrl`,
 `PciProxy:TenantId`, and `PciProxy:ProviderId`: `plain-provider` for the PlainAdapter,
 `encrypted-provider` for the EncryptedAdapter), with the provider's original URL in `X-Proxy-Url`, and
 `X-Proxy-TimeoutMs: 90000` unless the request has an `X-Proxy-TimeoutMs` of its own. 90 s is below the 100 s
@@ -136,7 +156,7 @@ with a message that names it.
 ### The send endpoint
 
 You can call the PCI Proxy yourself. It is `/api/t/{tenantId}/providers/{providerId}/send` on
-`http://127.0.0.1:5700`, for any HTTP method. `tenantId` is ignored (the adapters send `sandbox`);
+`http://pci-proxy.localhost:5700`, for any HTTP method. `tenantId` is ignored (the adapters send `sandbox`);
 `providerId` selects the provider's profile (below).
 
 | Request header | |
@@ -160,7 +180,7 @@ work. Only one level of decoding is done: a double-encoded marker in the URL is 
 every token answers `012345678901234567`, except `Y000000000000000`, which the tokenizer rejects.
 
 ```bash
-curl -i -X POST http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send \
+curl -i -X POST http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send \
   -H 'X-Proxy-Url: http://plain-provider.localhost:5200/create-transaction' \
   -H 'Content-Type: application/json' \
   -d '{"transactionId":"T-900","amount":1.00,"currency":"USD","senderName":"A","recipientName":"B","bankAccountNumber":"{{pci:ba:Y000000000000001}}"}'
@@ -177,7 +197,7 @@ A marker can also be in the URL. This validates through the plain provider, whic
 `GET /validate-transaction?bankAccountNumber=012345678901234567`:
 
 ```bash
-curl -i 'http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send' \
+curl -i 'http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send' \
   -H 'X-Proxy-Url: http://plain-provider.localhost:5200/validate-transaction?bankAccountNumber=%7B%7Bpci%3Aba%3AY000000000000001%7D%7D'
 ```
 
@@ -204,7 +224,7 @@ gives `504`.
 For example, a request whose token the tokenizer rejects:
 
 ```bash
-curl -i -X POST http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send \
+curl -i -X POST http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send \
   -H 'X-Proxy-Url: http://plain-provider.localhost:5200/create-transaction' \
   -d '{"bankAccountNumber":"{{pci:ba:Y000000000000000}}"}'
 ```
@@ -291,11 +311,11 @@ In `on` mode, read an adapter's log like this:
 - Each request that carries a marker logs two `-->` / `<--` pairs. The first,
   `--> POST http://plain-provider.localhost:5200/create-transaction {... "bankAccountNumber":"{{pci:ba:Y000000000000001}}"}`,
   is the logical request, to the provider's own URL, even though the request is re-sent to the proxy. The
-  second, `--> POST http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send {...}`, is the real
+  second, `--> POST http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send {...}`, is the real
   call. The pairs are nested, not sequential: `-->` logical, `-->` real, `<--` real, `<--` logical.
 - For the PlainAdapter's validate `GET` the marker is in the query string of the first line, and in the
   second only in the `X-Proxy-Url` header, which the log does not print: that line is just
-  `--> GET http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send`.
+  `--> GET http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send`.
 - An adapter returns only the status, the body and the content type of what it received. `X-Proxy-Outcome`
   and `X-Proxy-Code` are not among them: to see them, call the PCI Proxy directly (see the send endpoint).
 
@@ -416,9 +436,9 @@ client ─► PciProxy :5700 /will-call/** ─► WillCallAdapter :5800
 ```
 
 ```bash
-curl -s http://127.0.0.1:5700/will-call/lookup-transactions   # two transactions with raw account numbers, in either mode
-curl -s http://127.0.0.1:5800/lookup-transactions             # the adapter alone: raw in off, markers in on
-open http://127.0.0.1:5700/will-call/swagger                  # the adapter's Swagger UI, through the proxy
+curl -s http://pci-proxy.localhost:5700/will-call/lookup-transactions   # two transactions with raw account numbers, in either mode
+curl -s http://will-call-adapter.localhost:5800/lookup-transactions             # the adapter alone: raw in off, markers in on
+open http://pci-proxy.localhost:5700/will-call/swagger                  # the adapter's Swagger UI, through the proxy
 ```
 
 Rules of the route: every 2xx JSON response has the markers in its string values replaced with raw values (any other
