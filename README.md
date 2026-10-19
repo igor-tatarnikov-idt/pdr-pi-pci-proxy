@@ -18,6 +18,7 @@ travels.
 | EncryptedProvider | 5300 | **HTTPS only**, with a self-signed certificate. `POST /create-transaction` and `POST /validate-transaction` expect `{"payload":"<base64>"}`; they answer `400` if the payload is not a properly encrypted transaction (create) or `{"bankAccountNumber":"..."}` (validate); validate answers `true`; `GET /balance` |
 | PlainAdapter | 5400 | `POST /create-transaction`, `POST /validate-transaction` and `GET /balance`, calls PlainProvider at `http://plain-provider.localhost:5200` |
 | EncryptedAdapter | 5500 | `POST /create-transaction`, `POST /validate-transaction` and `GET /balance`, calls EncryptedProvider at `https://encrypted-provider.localhost:5300` |
+| WillCallAdapter | 5800 | `GET /lookup-transactions` returns two hard-coded transactions (`T-101-willcall`, `T-102-willcall`) whose stored bank account tokens are `Y000000000000002` and `Y000000000000003`; Swagger at `/swagger`. `PciProxy:Mode=off` (or `egress`): detokenizes them itself and returns the raw numbers. `on`: returns markers `{{pci:ba:<token>}}` and never calls the tokenizer |
 | Forwarder | 5600, 5601 | Envoy 1.36.9 in the Podman container `sandbox-forwarder`: a forward proxy that adds no headers and has no logic. 5600 is the proxy, 5601 its admin interface (`curl http://127.0.0.1:5601/ready`). The adapters use it in `egress` mode, and in `on` mode for requests without a marker |
 | PciProxy | 5700 | The PDR's PCI Proxy: `/api/t/{tenantId}/providers/{providerId}/send`, any HTTP method. It replaces the markers `{{pci:ba:<token>}}` in a request with the raw values from the tokenizer and calls the provider. The adapters use it in `on` mode |
 
@@ -403,3 +404,27 @@ replacement on bytes), `TokenizerClient.cs` (the tokenizer calls and their retri
 `smoke.sh`, `gen-cert.sh` and `forwarder.sh`.
 
 The design is in `docs/superpowers/specs/` and the implementation plans in `docs/superpowers/plans/`.
+
+## Will Call: the PCI Proxy as the WillCall Gateway
+
+The PDR's WillCall Gateway is a YARP route of the PCI Proxy (`Yarp.ReverseProxy` 2.3.0, configured in `ReverseProxy` in
+`src/PciProxy/appsettings.json`): everything under `/will-call/` goes to the WillCallAdapter, with the prefix removed.
+
+```
+client ─► PciProxy :5700 /will-call/** ─► WillCallAdapter :5800
+                    └─► Tokenizer :5100   (one call per distinct token, to replace the markers in the response)
+```
+
+```bash
+curl -s http://127.0.0.1:5700/will-call/lookup-transactions   # two transactions with raw account numbers, in either mode
+curl -s http://127.0.0.1:5800/lookup-transactions             # the adapter alone: raw in off, markers in on
+open http://127.0.0.1:5700/will-call/swagger                  # the adapter's Swagger UI, through the proxy
+```
+
+Rules of the route: every 2xx JSON response has the markers in its string values replaced with raw values (any other
+response streams through; a JSON body without a marker is returned byte for byte); a token the tokenizer rejects, a
+tokenizer that is down or a malformed marker makes the whole response `500` with `X-Proxy-Code` (`TOKEN_INVALID`,
+`TOKENIZER_UNAVAILABLE`, `MARKER_SYNTAX`); a request with marker syntax in its path, query, headers or body is refused with `400
+MARKER_SYNTAX`. The proxy asks for uncompressed responses and sends `X-Forwarded-Prefix: /will-call`, which the adapter's Swagger
+document uses as its server URL. Not done, left from the PDR: the list routes that drop unresolved items, authentication, a body
+size limit. `scripts/smoke.sh will-call` checks it all (`PCI_PROXY_MODE` is the adapter's mode).

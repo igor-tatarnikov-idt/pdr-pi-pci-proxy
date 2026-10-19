@@ -12,7 +12,8 @@ PLAIN_ADAPTER=http://127.0.0.1:5400
 ENC_ADAPTER=http://127.0.0.1:5500
 FORWARDER=http://127.0.0.1:5600
 FORWARDER_ADMIN=http://127.0.0.1:5601
-PCI_PROXY=http://127.0.0.1:5700
+PCI_PROXY=${PCI_PROXY:-http://127.0.0.1:5700}
+WILL_CALL_ADAPTER=http://127.0.0.1:5800
 SEND=$PCI_PROXY/api/t/sandbox/providers
 # The mode the adapters were started in (PciProxy__Mode); the forwarder group expects the Forwarder log to match it.
 PCI_PROXY_MODE=${PCI_PROXY_MODE:-off}
@@ -268,6 +269,29 @@ group_pci_proxy() {
     -X POST "$url" -H "x-proxy-url: $enc_provider/validate-transaction" -H "$h" -d "$validate"
   check_proxy "encrypted provider rejects a bad payload through the proxy" 400 Forwarded '' '' \
     -X POST "$enc_url" -H "x-proxy-url: $enc_provider/create-transaction" -H "$h" -d 'not json'
+}
+
+group_will_call() {
+  local raw='012345678901234567'
+  # The adapter alone: raw numbers when it detokenizes itself ('off', 'egress'), markers when the PCI Proxy is to ('on').
+  if [[ $PCI_PROXY_MODE == on ]]; then
+    check "will-call adapter returns markers" 200 '{{pci:ba:Y000000000000002}}' "$WILL_CALL_ADAPTER/lookup-transactions"
+  else
+    check "will-call adapter returns raw numbers" 200 "\"bankAccountNumber\":\"$raw\"" "$WILL_CALL_ADAPTER/lookup-transactions"
+  fi
+  # Through the PCI Proxy's YARP route the client gets raw numbers in either mode, and never a marker.
+  local body
+  body=$(curl -s "$PCI_PROXY/will-call/lookup-transactions")
+  if [[ $body == *'T-101-willcall'* && $body == *'T-102-willcall'* && $body != *'{{pci:'* && $(grep -o "$raw" <<< "$body" | wc -l) -eq 2 ]]; then
+    echo "PASS will-call via the PCI Proxy: two transactions, raw numbers"
+  else
+    echo "FAIL will-call via the PCI Proxy ($body)"
+    FAILED=1
+  fi
+  check "will-call swagger UI via the PCI Proxy" 200 'swagger' -L "$PCI_PROXY/will-call/swagger"
+  check "will-call swagger document names the /will-call server" 200 '"url": "/will-call"' "$PCI_PROXY/will-call/swagger/v1/swagger.json"
+  check "will-call: unknown route passes through" 404 '' "$PCI_PROXY/will-call/no-such-route"
+  check "will-call: marker in the query is refused" 400 'MARKER_SYNTAX' "$PCI_PROXY/will-call/lookup-transactions?x=%7B%7Bpci%3Aba%3AY000000000000002%7D%7D"
 }
 
 groups=("$@")
