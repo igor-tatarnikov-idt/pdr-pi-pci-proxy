@@ -12,6 +12,8 @@ PLAIN_ADAPTER=http://127.0.0.1:5400
 ENC_ADAPTER=http://127.0.0.1:5500
 FORWARDER=http://127.0.0.1:5600
 FORWARDER_ADMIN=http://127.0.0.1:5601
+PCI_PROXY=http://127.0.0.1:5700
+SEND=$PCI_PROXY/api/t/sandbox/providers
 # The mode the adapters were started in (PciProxy__Mode); the forwarder group expects the Forwarder log to match it.
 PCI_PROXY_MODE=${PCI_PROXY_MODE:-off}
 SAMPLE_TX='{"transactionId":"T-000","amount":1.00,"currency":"USD","senderName":"A","recipientName":"B","bankAccountNumber":"0123"}'
@@ -43,6 +45,32 @@ check() {
   fi
 }
 
+# check_proxy <name> <expected-status> <expected-outcome> <expected-code-or-empty> <body-substring-or-empty> <curl args...>
+# Like check, and also matches the PCI Proxy's X-Proxy-Outcome and, if given, X-Proxy-Code response headers.
+check_proxy() {
+  local name=$1 expected=$2 outcome=$3 code=$4 substring=$5 headers body status received
+  shift 5
+  headers=$(mktemp) && body=$(mktemp) || return 1
+  status=$(curl -s -D "$headers" -o "$body" -w '%{http_code}' "$@")
+  received=$(tr -d '\r' < "$headers") # curl writes the header lines with CRLF; grep -x needs them without
+  if [[ $status != "$expected" ]]; then
+    echo "FAIL $name (got $status, expected $expected)"
+    FAILED=1
+  elif ! grep -qixF -- "x-proxy-outcome: $outcome" <<< "$received"; then
+    echo "FAIL $name (X-Proxy-Outcome is not $outcome)"
+    FAILED=1
+  elif [[ -n $code ]] && ! grep -qixF -- "x-proxy-code: $code" <<< "$received"; then
+    echo "FAIL $name (X-Proxy-Code is not $code)"
+    FAILED=1
+  elif [[ -n $substring ]] && ! grep -qF -- "$substring" "$body"; then
+    echo "FAIL $name (body does not contain $substring)"
+    FAILED=1
+  else
+    echo "PASS $name"
+  fi
+  rm -f "$headers" "$body"
+}
+
 # check_log <name> <present|absent> <grep -E pattern> <text>
 check_log() {
   local name=$1 expectation=$2 pattern=$3 text=$4 found=absent
@@ -60,6 +88,8 @@ check_log() {
 group_tokenizer() {
   check "tokenizer detokenizes to the constant" 200 '"value":"012345678901234567"' \
     -X POST "$TOKENIZER/detokenize" -H 'content-type: application/json' -d '{"token":"anything"}'
+  check "tokenizer: invalid token" 404 'token not found' \
+    -X POST "$TOKENIZER/detokenize" -H 'content-type: application/json' -d '{"token":"Y000000000000000"}'
 }
 
 group_plain_provider() {
@@ -124,6 +154,8 @@ group_forwarder() {
   # run-all.sh does) when switching PCI_PROXY_MODE, or lines from an earlier mode are still in it.
   local create='POST plain-provider\.localhost:5200/create-transaction'
   local validate='GET plain-provider\.localhost:5200/validate-transaction\?bankAccountNumber=012345678901234567'
+  # In 'on' the adapter never has the raw number, so a pattern that names it could not match whatever happened: any validate.
+  local validate_any='GET plain-provider\.localhost:5200/validate-transaction'
   local balance='GET plain-provider\.localhost:5200/balance'
   local connect='CONNECT encrypted-provider\.localhost:5300'
   local before new all
@@ -132,6 +164,7 @@ group_forwarder() {
   curl -s -o /dev/null -X POST "$PLAIN_ADAPTER/validate-transaction"
   curl -s -o /dev/null "$PLAIN_ADAPTER/balance"
   curl -s -o /dev/null -X POST "$ENC_ADAPTER/create-transaction"
+  curl -s -o /dev/null "$ENC_ADAPTER/balance"
   sleep 1 # Envoy flushes its access log to stdout every 100 ms (scripts/forwarder.sh)
   all=$(podman logs sandbox-forwarder 2>&1)
   new=$(tail -n +$((before + 1)) <<< "$all")
@@ -158,11 +191,83 @@ group_forwarder() {
       check_log "off: the plain provider never went through the Forwarder" absent 'plain-provider\.localhost' "$adapter_all"
       check_log "off: the encrypted provider never went through the Forwarder" absent "$connect" "$adapter_all"
       ;;
+    on)
+      # The requests with a marker go to the PCI Proxy, which calls the providers directly; only balance, which has no
+      # marker, still goes through the Forwarder.
+      check_log "on: plain create goes to the PCI Proxy, not through the Forwarder" absent "$create" "$adapter_new"
+      check_log "on: plain validate goes to the PCI Proxy, not through the Forwarder" absent "$validate_any" "$adapter_new"
+      check_log "on: plain balance goes through the Forwarder" present "$balance" "$adapter_new"
+      # The encrypted adapter's balance is the only request of its own that reaches the Forwarder; a pooled tunnel may be
+      # reused, so the whole log is searched for the CONNECT.
+      check_log "on: encrypted provider is reached over CONNECT (balance)" present "$connect" "$adapter_all"
+      check_log "on: neither the tokenizer nor the PCI Proxy goes through the Forwarder" absent 'detokenize|:5100|:5700' "$all"
+      ;;
     *)
-      echo "PCI_PROXY_MODE must be 'off' or 'egress' (got '$PCI_PROXY_MODE')" >&2
+      echo "PCI_PROXY_MODE must be 'off', 'egress' or 'on' (got '$PCI_PROXY_MODE')" >&2
       exit 2
       ;;
   esac
+}
+
+group_pci_proxy() {
+  local M='{{pci:ba:Y000000000000001}}' ME='%7B%7Bpci%3Aba%3AY000000000000001%7D%7D'
+  local TX_M="{\"transactionId\":\"T-000\",\"amount\":1.00,\"currency\":\"USD\",\"senderName\":\"A\",\"recipientName\":\"B\",\"bankAccountNumber\":\"$M\"}"
+  local provider=http://plain-provider.localhost:5200 url=$SEND/plain-provider/send h='content-type: application/json'
+  check_proxy "plain create, marker in body" 200 Forwarded '' '"status":"accepted"' \
+    -X POST "$url" -H "x-proxy-url: $provider/create-transaction" -H "$h" -d "$TX_M"
+  check_proxy "plain validate, marker in query" 200 Forwarded '' 'true' \
+    "$url" -H "x-proxy-url: $provider/validate-transaction?bankAccountNumber=$ME"
+  check_proxy "provider 404 passes through" 404 Forwarded '' '' \
+    "$url" -H "x-proxy-url: $provider/no-such-route"
+  check_proxy "method is preserved" 405 Forwarded '' '' \
+    -X PUT "$url" -H "x-proxy-url: $provider/create-transaction" -H "$h" -d "$TX_M"
+  check_proxy "missing X-Proxy-Url" 400 NotSent MARKER_SYNTAX '' -X POST "$url"
+  check_proxy "bad X-Proxy-TimeoutMs" 400 NotSent MARKER_SYNTAX '' \
+    "$url" -H "x-proxy-url: $provider/balance" -H 'x-proxy-timeoutms: abc'
+
+  # A marker written into a URL with {{ }} is sent by .NET as %7B%7Bpci:ba:...%7D%7D (braces escaped, colons not): a
+  # partly percent-encoded marker is still a marker, whole or malformed.
+  local mixed='%7B%7Bpci:ba:Y000000000000001%7D%7D' query="$provider/validate-transaction?bankAccountNumber="
+  check_proxy "partly encoded marker in query" 200 Forwarded '' 'true' "$url" -H "x-proxy-url: $query$mixed"
+  check_proxy "partly encoded empty marker" 400 NotSent MARKER_SYNTAX '' "$url" -H "x-proxy-url: $query%7B%7Bpci:ba:%7D%7D"
+  check_proxy "partly encoded truncated marker" 400 NotSent MARKER_SYNTAX '' "$url" -H "x-proxy-url: $query%7B%7Bpci:ba:Y000"
+  check_proxy "partly encoded X-type token" 400 NotSent MARKER_SYNTAX '' \
+    "$url" -H "x-proxy-url: ${query}%7B%7Bpci:ba:X000000000000001%7D%7D"
+
+  # The error rows that need nothing but the running stack. A provider that does not answer (504, Unknown) and a tokenizer
+  # that is down (503) are checked by hand: see Task 2 of the plan.
+  local create=$provider/create-transaction
+  check_proxy "empty marker" 400 NotSent MARKER_SYNTAX '' \
+    -X POST "$url" -H "x-proxy-url: $create" -H "$h" -d '{"bankAccountNumber":"{{pci:ba:}}"}'
+  check_proxy "truncated marker" 400 NotSent MARKER_SYNTAX '' \
+    -X POST "$url" -H "x-proxy-url: $create" -H "$h" -d '{"bankAccountNumber":"{{pci:ba:Y000'
+  check_proxy "X-type token" 400 NotSent MARKER_SYNTAX '' \
+    -X POST "$url" -H "x-proxy-url: $create" -H "$h" -d '{"bankAccountNumber":"{{pci:ba:X000000000000001}}"}'
+  check_proxy "truncated encoded marker in the URL" 400 NotSent MARKER_SYNTAX '' \
+    "$url" -H "x-proxy-url: $provider/validate-transaction?bankAccountNumber=%7B%7Bpci%3Aba%3A"
+  local invalid='{"bankAccountNumber":"{{pci:ba:Y000000000000000}}"}'
+  check_proxy "invalid token" 422 NotSent TOKEN_INVALID '' -X POST "$url" -H "x-proxy-url: $create" -H "$h" -d "$invalid"
+  check_proxy "provider unreachable" 502 NotSent PROVIDER_UNREACHABLE '' "$url" -H 'x-proxy-url: http://127.0.0.1:5999/x'
+  check_proxy "unknown provider id is plain" 200 Forwarded '' '"balance":1000' \
+    "$SEND/some-other-id/send" -H "x-proxy-url: $provider/balance"
+  check_proxy "proxy error body is problem details" 422 NotSent TOKEN_INVALID '"status":422' \
+    -X POST "$url" -H "x-proxy-url: $create" -H "$h" -d "$invalid"
+  # HttpClient cannot write a non-ASCII header value, so nothing is sent: an invalid header, not a provider failure.
+  check_proxy "non-ASCII header value" 400 NotSent MARKER_SYNTAX '' "$url" -H "x-proxy-url: $provider/balance" -H $'x-custom: caf\xc3\xa9'
+
+  # The encrypted profile: the proxy replaces the markers, then encrypts the body, and trusts the provider's certificate.
+  # The encrypted provider answers 200 only to a properly encrypted body, so it is the oracle for the encryption. The
+  # plain profile (any other id) has no pinned certificate, so the handshake with the self-signed provider fails.
+  local enc_url=$SEND/encrypted-provider/send enc_provider=https://encrypted-provider.localhost:5300
+  local validate="{\"bankAccountNumber\":\"$M\"}"
+  check_proxy "encrypted validate through the encrypted profile" 200 Forwarded '' 'true' \
+    -X POST "$enc_url" -H "x-proxy-url: $enc_provider/validate-transaction" -H "$h" -d "$validate"
+  check_proxy "encrypted create through the encrypted profile" 200 Forwarded '' '"status":"accepted"' \
+    -X POST "$enc_url" -H "x-proxy-url: $enc_provider/create-transaction" -H "$h" -d "$TX_M"
+  check_proxy "plain profile does not encrypt" 502 NotSent PROVIDER_UNREACHABLE '' \
+    -X POST "$url" -H "x-proxy-url: $enc_provider/validate-transaction" -H "$h" -d "$validate"
+  check_proxy "encrypted provider rejects a bad payload through the proxy" 400 Forwarded '' '' \
+    -X POST "$enc_url" -H "x-proxy-url: $enc_provider/create-transaction" -H "$h" -d 'not json'
 }
 
 groups=("$@")

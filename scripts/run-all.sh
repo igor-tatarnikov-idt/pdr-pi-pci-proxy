@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Creates the sandbox certificate if it is missing, builds the solution once, starts the Forwarder (an Envoy container
-# that needs Podman), then starts all five sandbox apps, with every log line prefixed by the app name.
+# that needs Podman), then starts all six sandbox apps, with every log line prefixed by the app name.
 # Without Podman it only warns: the sandbox then works in 'off' mode but not in 'egress' mode.
 # Ctrl+C (or SIGTERM) stops them all, removes the Forwarder container, and waits until the apps have exited and their
 # output is flushed.
@@ -19,7 +19,7 @@ else
   scripts/forwarder.sh stop > /dev/null 2>&1 # a container that started but never became ready must not linger
 fi
 
-APPS=(Tokenizer PlainProvider EncryptedProvider PlainAdapter EncryptedAdapter)
+APPS=(Tokenizer PciProxy PlainProvider EncryptedProvider PlainAdapter EncryptedAdapter)
 PIDS=()
 FIFO_DIR=$(mktemp -d)
 
