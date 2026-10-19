@@ -296,20 +296,20 @@ sees the Podman gateway (`192.168.127.1`), not `127.0.0.1`: a caller on the host
   `plaintext` it encrypted (not in `on`: it sends plain JSON and the proxy encrypts it).
 - **Tokenizer:** an `in id=... from=... method=POST target=/detokenize body={"token":...}` line per call. In `on` mode the calls are the PCI Proxy's, one
   per distinct token of a request, and the adapters make none.
-- **PciProxy:** one `send id=... from=<ip:port> provider=... status=... tokenizer_ms=... provider_ms=...` line per send request, and one `will-call id=... from=<ip:port> method=... path=... status=...` line per Will Call request (rejected ones too; the query is never logged), plus `will-call-rewrite id=... values=N tokens=M` when markers were replaced.
-- **Forwarder:** one access-log line per request (two for a `CONNECT`, see below), in UTC, as
-  `[time] id=<request id> from=<ip:port> METHOD host:port/path -> upstream-address status ua=User-Agent`. In `egress` mode:
+- **PciProxy:** one `send` entry per send request (`origin`, `providerId`, `status`, `outcome`, `code`, `tokenizerMs`, `providerMs`, ...), and one `will-call` entry per Will Call request (`origin`, `method`, `path`, `status`; rejected ones too; the query is never logged), plus `will-call-rewrite` (`values`, `tokens`) when markers were replaced.
+- **Forwarder:** one JSON access-log line per request (two for a `CONNECT`, see below), in UTC, with the fields
+  `ts`, `id`, `traceparent`, `from`, `method`, `authority` (host:port), `path`, `upstream` (address), `status` and `ua` (the User-Agent). In `egress` mode:
   - the plain provider's calls show in full, the raw account number included:
-    `GET plain-provider.localhost:5200/validate-transaction?bankAccountNumber=012345678901234567 -> 192.168.127.254:5200 200 ua=-`
-    (`ua=-` is the adapters' .NET `HttpClient`, which sends no User-Agent; the address is the Mac host as
+    `"authority":"plain-provider.localhost:5200", ... "method":"GET","path":"/validate-transaction?bankAccountNumber=012345678901234567", ... "ua":"-"`
+    (`"ua":"-"` is the adapters' .NET `HttpClient`, which sends no User-Agent; the address is the Mac host as
     the container sees it);
   - the encrypted provider's calls show only as the tunnel,
-    `CONNECT encrypted-provider.localhost:5300- -> 192.168.127.254:5300 200 ua=-`: the Forwarder never
+    `"authority":"encrypted-provider.localhost:5300", ... "method":"CONNECT"`: the Forwarder never
     sees the path or body inside the TLS session. A `CONNECT` is logged twice, with the same start time:
     when the tunnel opens and again when it closes. An adapter keeps its tunnel pooled, so the second
     line can appear a minute or more after the call and looks like a new request;
   - in `off` mode none of the adapters' calls appear (only requests you send through the proxy yourself,
-    such as the smoke checks' `ua=curl/...` ones);
+    such as the smoke checks' `"ua":"curl/..."` ones);
   - in `on` mode only the requests without a marker appear: the balance calls (the encrypted adapter's
     as a `CONNECT` tunnel). The create and validate calls do not, and neither do the tokenizer or the
     PCI Proxy.
