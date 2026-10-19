@@ -7,7 +7,7 @@ cd "$(dirname "$0")/.." || exit 1
 
 NAME=sandbox-forwarder
 IMAGE=docker.io/envoyproxy/envoy:v1.36.9
-ADMIN=http://127.0.0.1:5601
+ADMIN=http://forwarder.localhost:5601
 
 start() {
   if ! command -v podman > /dev/null; then

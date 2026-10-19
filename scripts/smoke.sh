@@ -5,15 +5,15 @@
 cd "$(dirname "$0")/.." || exit 1
 
 CERT=certs/sandbox.crt
-TOKENIZER=http://127.0.0.1:5100
-PLAIN_PROVIDER=http://127.0.0.1:5200
-ENC_PROVIDER=https://127.0.0.1:5300
-PLAIN_ADAPTER=http://127.0.0.1:5400
-ENC_ADAPTER=http://127.0.0.1:5500
-FORWARDER=http://127.0.0.1:5600
-FORWARDER_ADMIN=http://127.0.0.1:5601
-PCI_PROXY=${PCI_PROXY:-http://127.0.0.1:5700}
-WILL_CALL_ADAPTER=http://127.0.0.1:5800
+TOKENIZER=http://tokenizer.localhost:5100
+PLAIN_PROVIDER=http://plain-provider.localhost:5200
+ENC_PROVIDER=https://encrypted-provider.localhost:5300
+PLAIN_ADAPTER=http://plain-adapter.localhost:5400
+ENC_ADAPTER=http://encrypted-adapter.localhost:5500
+FORWARDER=http://forwarder.localhost:5600
+FORWARDER_ADMIN=http://forwarder.localhost:5601
+PCI_PROXY=${PCI_PROXY:-http://pci-proxy.localhost:5700}
+WILL_CALL_ADAPTER=http://will-call-adapter.localhost:5800
 SEND=$PCI_PROXY/api/t/sandbox/providers
 # The mode the adapters were started in (PciProxy__Mode); the forwarder group expects the Forwarder log to match it.
 PCI_PROXY_MODE=${PCI_PROXY_MODE:-off}
@@ -153,12 +153,14 @@ group_forwarder() {
 
   # Which way the adapters reach the providers. The Forwarder log is that of the running container: restart it (as
   # run-all.sh does) when switching PCI_PROXY_MODE, or lines from an earlier mode are still in it.
-  local create='POST plain-provider\.localhost:5200/create-transaction'
-  local validate='GET plain-provider\.localhost:5200/validate-transaction\?bankAccountNumber=012345678901234567'
+  # The access log is JSON, one object per line, its keys in alphabetical order (authority, from, id, method, path, status, ...).
+  local plain='"authority":"plain-provider\.localhost:5200".*'
+  local create="$plain"'"method":"POST","path":"/create-transaction"'
+  local validate="$plain"'"method":"GET","path":"/validate-transaction\?bankAccountNumber=012345678901234567"'
   # In 'on' the adapter never has the raw number, so a pattern that names it could not match whatever happened: any validate.
-  local validate_any='GET plain-provider\.localhost:5200/validate-transaction'
-  local balance='GET plain-provider\.localhost:5200/balance'
-  local connect='CONNECT encrypted-provider\.localhost:5300'
+  local validate_any="$plain"'"method":"GET","path":"/validate-transaction'
+  local balance="$plain"'"method":"GET","path":"/balance"'
+  local connect='"authority":"encrypted-provider\.localhost:5300".*"method":"CONNECT"'
   local before new all
   before=$(podman logs sandbox-forwarder 2>&1 | wc -l)
   curl -s -o /dev/null -X POST "$PLAIN_ADAPTER/create-transaction"
@@ -171,10 +173,10 @@ group_forwarder() {
   new=$(tail -n +$((before + 1)) <<< "$all")
 
   # The group's own curl checks above also pass through the Forwarder. .NET's HttpClient sends no User-Agent, which
-  # the access log shows as "ua=-", so only those lines are the adapters'.
+  # the access log shows as "ua":null, so only those lines are the adapters'.
   local adapter_new adapter_all
-  adapter_new=$(grep -E ' ua=-$' <<< "$new")
-  adapter_all=$(grep -E ' ua=-$' <<< "$all")
+  adapter_new=$(grep -F '"ua":null' <<< "$new")
+  adapter_all=$(grep -F '"ua":null' <<< "$all")
   case $PCI_PROXY_MODE in
     egress)
       check_log "egress: plain create goes through the Forwarder" present "$create" "$adapter_new"
@@ -291,6 +293,15 @@ group_will_call() {
   check "will-call swagger UI via the PCI Proxy" 200 'swagger' -L "$PCI_PROXY/will-call/swagger"
   check "will-call swagger document names the /will-call server" 200 '"url": "/will-call"' "$PCI_PROXY/will-call/swagger/v1/swagger.json"
   check "will-call: unknown route passes through" 404 '' "$PCI_PROXY/will-call/no-such-route"
+  # RFC 9110 / 9111 rules of the route: a response with raw numbers is not cacheable, the proxy adds its Via, TRACE is refused with Allow,
+  # and a Range request is answered with the whole response (the proxy drops the header), never a rewritten fragment.
+  local headers
+  headers=$(curl -s -D - -o /dev/null -H 'Range: bytes=0-10' "$PCI_PROXY/will-call/lookup-transactions" | tr -d '\r')
+  check_log "will-call: raw response is no-store" present '^[Cc]ache-[Cc]ontrol: no-store' "$headers"
+  check_log "will-call: response carries Via" present '^[Vv]ia: 1\.1 pci-proxy' "$headers"
+  check_log "will-call: Range is not honoured (200, not 206)" present '^HTTP/[0-9.]+ 200' "$headers"
+  check "will-call: TRACE is refused" 405 'METHOD_NOT_ALLOWED' -X TRACE "$PCI_PROXY/will-call/lookup-transactions"
+  check "send: TRACE is refused" 405 'METHOD_NOT_ALLOWED' -X TRACE "$SEND/plain-provider/send" -H 'x-proxy-url: http://plain-provider.localhost:5200/balance'
   check "will-call: marker in the query is refused" 400 'MARKER_SYNTAX' "$PCI_PROXY/will-call/lookup-transactions?x=%7B%7Bpci%3Aba%3AY000000000000002%7D%7D"
 }
 

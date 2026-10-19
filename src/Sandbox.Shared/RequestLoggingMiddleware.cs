@@ -6,7 +6,7 @@ namespace Sandbox.Shared;
 
 public static class RequestLoggingExtensions
 {
-    /// <summary>Logs every inbound request as "&lt;-- METHOD /path?query body" under the given logger category.</summary>
+    /// <summary>Logs every inbound request as "in from=origin method=... target=/path?query body=..." under the given logger category.</summary>
     public static IApplicationBuilder UseRequestLogging(this IApplicationBuilder app, string appName) =>
         app.UseMiddleware<RequestLoggingMiddleware>(appName);
 }
@@ -18,6 +18,9 @@ internal sealed class RequestLoggingMiddleware(RequestDelegate next, ILoggerFact
     public async Task InvokeAsync(HttpContext context)
     {
         var request = context.Request;
+        var id = RequestId.FromRequestOrNew(request);
+        RequestId.Current = id;
+        context.Response.Headers[RequestId.Header] = id;
         request.EnableBuffering();
 
         string body;
@@ -27,7 +30,7 @@ internal sealed class RequestLoggingMiddleware(RequestDelegate next, ILoggerFact
         }
         request.Body.Position = 0;
 
-        _logger.LogInformation("<-- {Method} {PathAndQuery} {Body}", request.Method, request.Path + request.QueryString, body);
+        _logger.LogInformation("in from={Origin} method={Method} target={Target} body={Body}", context.GetOrigin(), request.Method, request.Path + request.QueryString, body);
         await next(context);
     }
 }

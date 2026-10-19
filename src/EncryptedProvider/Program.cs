@@ -2,6 +2,7 @@ using System.Text.Json;
 using Sandbox.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var app = builder.Build();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EncryptedProvider");
 
@@ -9,7 +10,7 @@ app.UseRequestLogging("EncryptedProvider");
 
 IResult Invalid(string reason, string? plaintext = null)
 {
-    log.LogWarning("rejected: {Reason}{Plaintext}", reason, plaintext is null ? "" : ": " + plaintext);
+    log.LogWarning("rejected reason={Reason}{Plaintext}", reason, plaintext is null ? "" : ": " + plaintext);
     return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
 }
 
@@ -51,7 +52,7 @@ async Task<(T? Value, IResult? Rejection)> ReadEncryptedAsync<T>(HttpRequest req
         return (null, Invalid($"not a valid {what}", plaintext));
     }
 
-    log.LogInformation("decrypted {What} {Plaintext}", what, plaintext);
+    log.LogInformation("decrypted what={What} plaintext={Plaintext}", what, plaintext);
     return (value, null);
 }
 

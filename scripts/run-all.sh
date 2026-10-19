@@ -2,6 +2,7 @@
 # Creates the sandbox certificate if it is missing, builds the solution once, starts the Forwarder (an Envoy container
 # that needs Podman), then starts all seven sandbox apps, with every log line prefixed by the app name.
 # Without Podman it only warns: the sandbox then works in 'off' mode but not in 'egress' mode.
+# Every app's output is also written to logs/<App>.log (see scripts/logs.sh).
 # Ctrl+C (or SIGTERM) stops them all, removes the Forwarder container, and waits until the apps have exited and their
 # output is flushed.
 
@@ -22,6 +23,7 @@ fi
 APPS=(Tokenizer PciProxy PlainProvider EncryptedProvider PlainAdapter EncryptedAdapter WillCallAdapter)
 PIDS=()
 FIFO_DIR=$(mktemp -d)
+mkdir -p logs
 
 cleanup() {
   trap - INT TERM EXIT
@@ -34,10 +36,12 @@ cleanup() {
 }
 trap cleanup INT TERM EXIT
 
-# prefixed <name>: prints everything written to that name's FIFO with the prefix [name]
+# prefixed <name>: prints everything written to that name's FIFO with the prefix [name], and appends the raw line to logs/<name>.log
+# (one file per app, emptied at every start), which scripts/logs.sh merges into one output sorted by time.
 prefixed() {
   mkfifo "$FIFO_DIR/$1"
-  awk -v prefix="[$1] " '{ print prefix $0; fflush() }' < "$FIFO_DIR/$1" &
+  : > "logs/$1.log"
+  awk -v prefix="[$1] " -v file="logs/$1.log" '{ print $0 >> file; fflush(file); print prefix $0; fflush() }' < "$FIFO_DIR/$1" &
 }
 
 if [[ -n $FORWARDER_STARTED ]]; then

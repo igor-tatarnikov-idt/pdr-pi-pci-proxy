@@ -2,6 +2,7 @@ using PciProxy;
 using Sandbox.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 
 // The tokenizer client connects directly (never through the Forwarder or a system proxy), keeps no cookies (the proxy
 // stores nothing between requests) and is not logged by the HTTP client factory, whose lines carry the request URL. It
@@ -12,7 +13,8 @@ builder.Services.AddHttpClient("tokenizer", c =>
         c.Timeout = TimeSpan.FromSeconds(5); // one attempt
     })
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false })
-    .RemoveAllLoggers();
+    .RemoveAllLoggers()
+    .AddRequestId();
 
 // The provider clients and hooks, by provider id, from Providers in appsettings.json.
 ProviderProfiles.Add(builder.Services, builder.Configuration, builder.Environment.ContentRootPath);
@@ -28,9 +30,22 @@ builder.Services.AddReverseProxy()
 
 var app = builder.Build();
 
+// Every request has an id for the log lines (the caller's, or a new one); the tokenizer calls carry it. It is not added to what
+// the provider receives: only an X-Request-Id that the adapter itself sent goes on.
+app.Use((context, next) =>
+{
+    RequestId.Current = RequestId.FromRequestOrNew(context.Request);
+    return next();
+});
+
 // Any method; the tenant is not used.
 app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext context, string providerId, SendPipeline pipeline) =>
 {
+    if (HttpRules.IsTrace(context.Request.Method))
+    {
+        await HttpRules.WriteMethodNotAllowedAsync(context);
+        return;
+    }
     try
     {
         await pipeline.HandleAsync(context, providerId);
@@ -41,6 +56,6 @@ app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext cont
     }
 });
 
-app.MapReverseProxy(pipeline => pipeline.Use(WillCallGateway.RejectMarkersAsync));
+app.MapReverseProxy(pipeline => pipeline.Use(WillCallGateway.LogRequestAsync).Use(WillCallGateway.RejectMarkersAsync));
 
 app.Run();

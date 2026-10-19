@@ -9,6 +9,7 @@ var storedTransactions = new[]
 };
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var pciProxyMode = builder.Configuration.GetPciProxyMode(); // stops the app on an invalid PciProxy:Mode
 
 builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configuration.GetBaseUri("Tokenizer:BaseUrl"))
@@ -17,6 +18,7 @@ builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen(options => options.SwaggerDoc("v1", new() { Title = "Will Call Adapter", Version = "v1" }));
 
 var app = builder.Build();
+app.UseRequestLogging("WillCallAdapter");
 app.Logger.LogPciProxyMode(pciProxyMode, builder.Configuration);
 
 // Behind the PCI Proxy the app is reached under a path prefix that it never sees, which the proxy sends in

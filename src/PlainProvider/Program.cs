@@ -1,6 +1,7 @@
 using Sandbox.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var app = builder.Build();
 
 app.UseRequestLogging("PlainProvider");

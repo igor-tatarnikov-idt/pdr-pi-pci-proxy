@@ -5,6 +5,7 @@ using Sandbox.Shared;
 const string BankAccountToken = "Y000000000000001";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var pciProxyMode = builder.Configuration.GetPciProxyMode(); // stops the app on an invalid PciProxy:Mode
 
 builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configuration.GetBaseUri("Tokenizer:BaseUrl"))
@@ -15,6 +16,7 @@ builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configur
     .AddPciProxy(builder.Configuration);
 
 var app = builder.Build();
+app.UseRequestLogging("PlainAdapter");
 app.Logger.LogPciProxyMode(pciProxyMode, builder.Configuration);
 
 // Detokenize the bank account the way adapters do today; the raw value is what goes to the provider.

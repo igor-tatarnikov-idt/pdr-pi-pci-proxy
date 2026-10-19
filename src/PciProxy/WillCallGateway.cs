@@ -1,3 +1,4 @@
+using System.Net;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -17,7 +18,12 @@ public static class WillCallGateway
 {
     public const string RouteId = "will-call";
 
-    /// <summary>Adds the response step to the Will Call route; the request side (prefix, headers) is in the route's configuration.</summary>
+    private const string Prefix = "/" + RouteId;
+
+    // The validators and digests of the upstream describe the bytes before the rewrite, not the ones the client gets.
+    private static readonly string[] RepresentationHeaders = ["ETag", "Content-MD5", "Digest", "Content-Digest", "Repr-Digest"];
+
+    /// <summary>Adds the response steps to the Will Call route; the request side (prefix, headers) is in the route's configuration.</summary>
     public static void AddTransforms(TransformBuilderContext context)
     {
         if (context.Route.RouteId != RouteId)
@@ -27,12 +33,43 @@ public static class WillCallGateway
         var rewriter = context.Services.GetRequiredService<MarkerResponseRewriter>();
         context.AddResponseTransform(async response =>
         {
-            RewriteLocation(response);
-            if (response.ProxyResponse is not { IsSuccessStatusCode: true } upstream || !IsJson(upstream))
+            if (response.ProxyResponse is not { } upstream)
             {
                 return;
             }
+            var outgoing = response.HttpContext.Response;
+            // Hop-by-hop for the upstream connection: the headers that its Connection field lists (RFC 9110 section 7.6.1).
+            foreach (var name in HttpRules.ConnectionTokens(upstream.Headers.Connection))
+            {
+                outgoing.Headers.Remove(name);
+            }
+            RewriteLocations(response, upstream);
+            outgoing.Headers.Append("Via", HttpRules.Via);
+
+            if (!upstream.IsSuccessStatusCode || !IsJson(upstream))
+            {
+                return;
+            }
+
+            // The raw account numbers are in this response: no cache may keep it, and no validator of the upstream stands for it.
+            outgoing.Headers.CacheControl = "no-store";
+            foreach (var name in RepresentationHeaders)
+            {
+                outgoing.Headers.Remove(name);
+            }
+            if (HttpMethods.IsHead(response.HttpContext.Request.Method))
+            {
+                return; // no body to rewrite; Content-Length stays that of the GET, as RFC 9110 section 9.3.2 wants
+            }
+
             response.SuppressResponseBody = true;
+            if (upstream.StatusCode == HttpStatusCode.PartialContent
+                || upstream.Content.Headers.ContentEncoding.Any(coding => !coding.Equals("identity", StringComparison.OrdinalIgnoreCase)))
+            {
+                // A fragment or a compressed body cannot be rewritten, and passing it on would leave markers in it.
+                await ProblemResponse.WriteAsync(response.HttpContext, new ProxyException(500, "NotSent", "PROXY_ERROR", "The response cannot be rewritten."));
+                return;
+            }
             var body = await upstream.Content.ReadAsByteArrayAsync(response.CancellationToken);
             byte[] rewritten;
             try
@@ -45,14 +82,49 @@ public static class WillCallGateway
                 await ProblemResponse.WriteAsync(response.HttpContext, new ProxyException(500, "NotSent", e.Code, e.Detail));
                 return;
             }
-            response.HttpContext.Response.ContentLength = rewritten.Length;
-            await response.HttpContext.Response.Body.WriteAsync(rewritten, response.CancellationToken);
+            outgoing.ContentLength = rewritten.Length;
+            await outgoing.Body.WriteAsync(rewritten, response.CancellationToken);
         });
     }
 
-    /// <summary>A request that has marker syntax anywhere (path, query, header values, body) is refused: see <see cref="MarkerRequestGuard"/>.</summary>
+    /// <summary>
+    /// One line per request, rejected ones included, with the address it came from: <c>will-call from=... method=... path=... status=...</c>.
+    /// The query is not logged.
+    /// </summary>
+    public static async Task LogRequestAsync(HttpContext context, Func<Task> next)
+    {
+        // The adapter gets the id too, so that its own lines can be matched with this one.
+        if (!context.Request.Headers.ContainsKey(RequestId.Header) && RequestId.Current is { } id)
+        {
+            context.Request.Headers[RequestId.Header] = id;
+        }
+        try
+        {
+            await next();
+        }
+        finally
+        {
+            context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("PciProxy").LogInformation(
+                "will-call from={Origin} method={Method} path={Path} status={Status}",
+                context.GetOrigin(), context.Request.Method, context.Request.Path, context.Response.StatusCode);
+        }
+    }
+
+    /// <summary>
+    /// The request steps before the proxying: TRACE is refused, the headers that the request's <c>Connection</c> field lists are
+    /// dropped, and a request that has marker syntax anywhere (path, query, header values, body) is refused: see <see cref="MarkerRequestGuard"/>.
+    /// </summary>
     public static async Task RejectMarkersAsync(HttpContext context, Func<Task> next)
     {
+        if (HttpRules.IsTrace(context.Request.Method))
+        {
+            await HttpRules.WriteMethodNotAllowedAsync(context);
+            return;
+        }
+        foreach (var name in HttpRules.ConnectionTokens(context.Request.Headers.Connection.Select(v => v!)))
+        {
+            context.Request.Headers.Remove(name);
+        }
         if (await MarkerRequestGuard.CarriesMarkerAsync(context.Request))
         {
             await ProblemResponse.WriteAsync(context, ProxyException.MarkerSyntax("The request carries marker syntax."));
@@ -61,14 +133,32 @@ public static class WillCallGateway
         await next();
     }
 
-    // The adapter knows nothing of the /will-call prefix, so a redirect it sends (Swagger's /swagger to /swagger/index.html) is made relative to the prefix.
-    private static void RewriteLocation(ResponseTransformContext response)
+    // The adapter knows nothing of the /will-call prefix, so a reference it sends (Swagger's redirect to /swagger/index.html, or
+    // an absolute URL of its own) is made relative to the prefix. A reference to any other host stays as it is.
+    private static void RewriteLocations(ResponseTransformContext response, HttpResponseMessage upstream)
     {
         var headers = response.HttpContext.Response.Headers;
-        if (headers.Location.ToString() is ['/', ..] location && response.HttpContext.Request.Path.StartsWithSegments("/" + RouteId))
+        var adapter = upstream.RequestMessage?.RequestUri;
+        foreach (var name in new[] { "Location", "Content-Location" })
         {
-            headers.Location = "/" + RouteId + location;
+            if (headers[name].ToString() is { Length: > 0 } value && RewriteReference(value, adapter) is { } rewritten)
+            {
+                headers[name] = rewritten;
+            }
         }
+    }
+
+    private static string? RewriteReference(string value, Uri? adapter)
+    {
+        if (value.StartsWith('/') && !value.StartsWith("//"))
+        {
+            return Prefix + value;
+        }
+        var absolute = value.StartsWith("//") && adapter is not null ? adapter.Scheme + ":" + value : value;
+        return adapter is not null && Uri.TryCreate(absolute, UriKind.Absolute, out var uri)
+            && uri.Scheme == adapter.Scheme && uri.Authority == adapter.Authority
+            ? Prefix + uri.PathAndQuery + uri.Fragment
+            : null;
     }
 
     private static bool IsJson(HttpResponseMessage response) =>
@@ -141,7 +231,7 @@ public sealed class MarkerResponseRewriter(TokenizerClient tokenizer, ILoggerFac
         }
 
         // Counts only: never a token, a raw value or a body.
-        _logger.LogInformation("will-call: replaced {Values} marker value(s), {Tokens} distinct token(s)", withMarkers.Count, tokens.Count);
+        _logger.LogInformation("will-call-rewrite values={Values} tokens={Tokens}", withMarkers.Count, tokens.Count);
         return JsonSerializer.SerializeToUtf8Bytes(document, Output);
     }
 
