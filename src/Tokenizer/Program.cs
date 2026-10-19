@@ -5,6 +5,7 @@ using Sandbox.Shared;
 const string InvalidToken = "Y000000000000000";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var app = builder.Build();
 
 app.UseRequestLogging("Tokenizer");

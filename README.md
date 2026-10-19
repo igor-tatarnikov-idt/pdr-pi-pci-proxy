@@ -254,13 +254,21 @@ proxy keeps nothing.
 
 ## What to look for in the logs
 
-Log format and the request id. Every line is `key=value` pairs (a free-text `body=` comes last), in four kinds: `in` (a request received),
-`out` and `res` (a call made, and its answer; the adapters) and the PCI Proxy's `send` / `will-call` summaries (the Forwarder's line has its
-own shape, with the same `id=` and `from=`). Every line of a request carries `id=<request id>`: the first app that sees the request makes
-the id up (or keeps a valid `X-Request-Id` that you send with curl: 1 to 64 letters, digits, `.`, `-`, `_`), and passes it on in
-`X-Request-Id` to every call it makes, so `grep <id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the
-PCI Proxy, the Tokenizer, the provider and the Forwarder. The PCI Proxy does not add the header to what the provider receives; the adapter's
-own `X-Request-Id` goes on with the rest of the headers. A bad `X-Request-Id` is replaced, never logged.
+Log format and the ids. A line is `HH:mm:ss Category id=<request id> trace=<trace id> message`: no level and no event id. The message is
+`key=value` pairs (a free-text `body=` comes last) of a few kinds: `in` (a request received), `out` and `res` (a call made, and its answer;
+the adapters), and the PCI Proxy's `send` and `will-call` summaries. The Forwarder's line has its own shape:
+`[time] id=<request id> traceparent=<traceparent> from=...`. `id` and `trace` are on **every** line written while a request is handled, the
+framework's (YARP's `Proxying to ...`) included, and absent from startup lines.
+
+- `id` is the request id. The first app that sees a request makes it up (or keeps a valid `X-Request-Id` that you send with curl: 1 to 64
+  letters, digits, `.`, `-`, `_`; a bad one is replaced and never logged) and passes it on in `X-Request-Id` to every call it makes. The PCI Proxy
+  does not add the header to what the provider receives; the adapter's own `X-Request-Id` goes on with the other headers.
+- `trace` is the W3C trace id. .NET starts it for each request and `HttpClient` passes it on in `traceparent`, so it is the same in the adapter, the PCI Proxy,
+  the Tokenizer and the provider that the adapter reaches directly. The PCI Proxy's call to the provider carries no `traceparent` (it
+  adds no header the adapter did not send), so a provider behind the proxy logs `id` and `trace` of the adapter's request only if the adapter's own headers
+  carried them; the proxy's own line has both. Each call the Forwarder passes on shows the caller's `traceparent`.
+
+`grep <id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the PCI Proxy, the Tokenizer, the provider and the Forwarder.
 
 Where a request came from: the providers, the Tokenizer, the adapters, the PCI Proxy and the Forwarder log the address and port of the peer that opened
 the connection (`from=127.0.0.1:54321`).

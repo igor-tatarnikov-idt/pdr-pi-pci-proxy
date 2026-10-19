@@ -51,7 +51,7 @@ public static class WillCallGateway
     }
 
     /// <summary>
-    /// One line per request, rejected ones included, with the address it came from: <c>will-call id=... from=... method=... path=... status=...</c>.
+    /// One line per request, rejected ones included, with the address it came from: <c>will-call from=... method=... path=... status=...</c>.
     /// The query is not logged.
     /// </summary>
     public static async Task LogRequestAsync(HttpContext context, Func<Task> next)
@@ -68,8 +68,8 @@ public static class WillCallGateway
         finally
         {
             context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("PciProxy").LogInformation(
-                "will-call id={Id} from={Origin} method={Method} path={Path} status={Status}",
-                RequestId.Current, context.GetOrigin(), context.Request.Method, context.Request.Path, context.Response.StatusCode);
+                "will-call from={Origin} method={Method} path={Path} status={Status}",
+                context.GetOrigin(), context.Request.Method, context.Request.Path, context.Response.StatusCode);
         }
     }
 
@@ -164,7 +164,7 @@ public sealed class MarkerResponseRewriter(TokenizerClient tokenizer, ILoggerFac
         }
 
         // Counts only: never a token, a raw value or a body.
-        _logger.LogInformation("will-call-rewrite id={Id} values={Values} tokens={Tokens}", RequestId.Current, withMarkers.Count, tokens.Count);
+        _logger.LogInformation("will-call-rewrite values={Values} tokens={Tokens}", withMarkers.Count, tokens.Count);
         return JsonSerializer.SerializeToUtf8Bytes(document, Output);
     }
 

@@ -6,6 +6,7 @@ using Sandbox.Shared;
 const string BankAccountToken = "Y000000000000001";
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 var pciProxyMode = builder.Configuration.GetPciProxyMode(); // stops the app on an invalid PciProxy:Mode
 
 builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configuration.GetBaseUri("Tokenizer:BaseUrl"))
@@ -44,7 +45,7 @@ async Task<IResult> SendPayloadAsync(IHttpClientFactory clients, string path, st
     var body = plaintextJson;
     if (pciProxyMode != PciProxyMode.On)
     {
-        log.LogInformation("plaintext id={Id} json={Json}", RequestId.Current, plaintextJson);
+        log.LogInformation("plaintext json={Json}", plaintextJson);
         body = JsonSerializer.Serialize(new EncryptedEnvelope(PayloadCipher.Encrypt(plaintextJson)), envelopeOptions);
     }
     var response = await clients.CreateClient("provider")

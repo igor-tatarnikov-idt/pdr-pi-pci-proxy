@@ -2,6 +2,7 @@ using PciProxy;
 using Sandbox.Shared;
 
 var builder = WebApplication.CreateBuilder(args);
+builder.Logging.AddSandboxConsoleFormatter();
 
 // The tokenizer client connects directly (never through the Forwarder or a system proxy), keeps no cookies (the proxy
 // stores nothing between requests) and is not logged by the HTTP client factory, whose lines carry the request URL. It

@@ -261,8 +261,8 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
         var request = context.Request;
         var (host, path) = DescribeUrl(request.Headers["X-Proxy-Url"]);
         _logger.LogInformation(
-            "send id={Id} from={Origin} provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer_ms={Tokenizer} provider_ms={Provider}",
-            RequestId.Current, context.GetOrigin(), SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
+            "send from={Origin} provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer_ms={Tokenizer} provider_ms={Provider}",
+            context.GetOrigin(), SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
     }
 
     private static string LogDuration(TimeSpan? duration) => duration is { } elapsed ? Milliseconds(elapsed) : "-";

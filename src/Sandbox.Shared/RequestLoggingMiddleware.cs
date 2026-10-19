@@ -6,7 +6,7 @@ namespace Sandbox.Shared;
 
 public static class RequestLoggingExtensions
 {
-    /// <summary>Logs every inbound request as "in id=... from=origin method=... target=/path?query body=..." under the given logger category.</summary>
+    /// <summary>Logs every inbound request as "in from=origin method=... target=/path?query body=..." under the given logger category.</summary>
     public static IApplicationBuilder UseRequestLogging(this IApplicationBuilder app, string appName) =>
         app.UseMiddleware<RequestLoggingMiddleware>(appName);
 }
@@ -30,7 +30,7 @@ internal sealed class RequestLoggingMiddleware(RequestDelegate next, ILoggerFact
         }
         request.Body.Position = 0;
 
-        _logger.LogInformation("in id={Id} from={Origin} method={Method} target={Target} body={Body}", id, context.GetOrigin(), request.Method, request.Path + request.QueryString, body);
+        _logger.LogInformation("in from={Origin} method={Method} target={Target} body={Body}", context.GetOrigin(), request.Method, request.Path + request.QueryString, body);
         await next(context);
     }
 }
