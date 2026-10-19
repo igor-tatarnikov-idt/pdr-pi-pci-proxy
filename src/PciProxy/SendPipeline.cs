@@ -261,11 +261,11 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
         var request = context.Request;
         var (host, path) = DescribeUrl(request.Headers["X-Proxy-Url"]);
         _logger.LogInformation(
-            "send origin={Origin} provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer={Tokenizer} provider={Provider}",
-            context.GetOrigin(), SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
+            "send id={Id} from={Origin} provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer_ms={Tokenizer} provider_ms={Provider}",
+            RequestId.Current, context.GetOrigin(), SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
     }
 
-    private static string LogDuration(TimeSpan? duration) => duration is { } elapsed ? Milliseconds(elapsed) + "ms" : "-";
+    private static string LogDuration(TimeSpan? duration) => duration is { } elapsed ? Milliseconds(elapsed) : "-";
 
     // The provider id comes from the caller: it is logged only when it looks like an id.
     private static string SafeProviderId(string providerId) =>

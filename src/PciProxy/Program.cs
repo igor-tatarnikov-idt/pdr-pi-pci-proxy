@@ -12,7 +12,8 @@ builder.Services.AddHttpClient("tokenizer", c =>
         c.Timeout = TimeSpan.FromSeconds(5); // one attempt
     })
     .ConfigurePrimaryHttpMessageHandler(() => new SocketsHttpHandler { AllowAutoRedirect = false, UseProxy = false, UseCookies = false })
-    .RemoveAllLoggers();
+    .RemoveAllLoggers()
+    .AddRequestId();
 
 // The provider clients and hooks, by provider id, from Providers in appsettings.json.
 ProviderProfiles.Add(builder.Services, builder.Configuration, builder.Environment.ContentRootPath);
@@ -27,6 +28,14 @@ builder.Services.AddReverseProxy()
     .AddTransforms(WillCallGateway.AddTransforms);
 
 var app = builder.Build();
+
+// Every request has an id for the log lines (the caller's, or a new one); the tokenizer calls carry it. It is not added to what
+// the provider receives: only an X-Request-Id that the adapter itself sent goes on.
+app.Use((context, next) =>
+{
+    RequestId.Current = RequestId.FromRequestOrNew(context.Request);
+    return next();
+});
 
 // Any method; the tenant is not used.
 app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext context, string providerId, SendPipeline pipeline) =>

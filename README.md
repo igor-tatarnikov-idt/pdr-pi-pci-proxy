@@ -254,8 +254,16 @@ proxy keeps nothing.
 
 ## What to look for in the logs
 
-Where a request came from: the providers, the Tokenizer, the PCI Proxy and the Forwarder log the address and port of the peer that opened
-the connection (`from=127.0.0.1:54321` in the providers and the Tokenizer, `origin=127.0.0.1:54321` in the PCI Proxy, `from=` in the Forwarder).
+Log format and the request id. Every line is `key=value` pairs (a free-text `body=` comes last), in four kinds: `in` (a request received),
+`out` and `res` (a call made, and its answer; the adapters) and the PCI Proxy's `send` / `will-call` summaries (the Forwarder's line has its
+own shape, with the same `id=` and `from=`). Every line of a request carries `id=<request id>`: the first app that sees the request makes
+the id up (or keeps a valid `X-Request-Id` that you send with curl: 1 to 64 letters, digits, `.`, `-`, `_`), and passes it on in
+`X-Request-Id` to every call it makes, so `grep <id>` on the whole output of `run-all.sh` shows the path of one request through the adapter, the
+PCI Proxy, the Tokenizer, the provider and the Forwarder. The PCI Proxy does not add the header to what the provider receives; the adapter's
+own `X-Request-Id` goes on with the rest of the headers. A bad `X-Request-Id` is replaced, never logged.
+
+Where a request came from: the providers, the Tokenizer, the adapters, the PCI Proxy and the Forwarder log the address and port of the peer that opened
+the connection (`from=127.0.0.1:54321`).
 It is the peer's address, never an `X-Forwarded-For` value, which a caller could write itself. The Forwarder runs in a container, so it
 sees the Podman gateway (`192.168.127.1`), not `127.0.0.1`: a caller on the host cannot be told from another one by that address.
 
@@ -269,11 +277,11 @@ sees the Podman gateway (`192.168.127.1`), not `127.0.0.1`: a caller on the host
 - **EncryptedProvider:** the decrypted transaction (or `decrypted validation request`), or
   `rejected: <reason>` for a request it could not decrypt. The EncryptedAdapter also logs the
   `plaintext` it encrypted (not in `on`: it sends plain JSON and the proxy encrypts it).
-- **Tokenizer:** a `<-- POST /detokenize from=<origin> {"token":...}` line per call. In `on` mode the calls are the PCI Proxy's, one
+- **Tokenizer:** an `in id=... from=... method=POST target=/detokenize body={"token":...}` line per call. In `on` mode the calls are the PCI Proxy's, one
   per distinct token of a request, and the adapters make none.
-- **PciProxy:** one `send origin=<ip:port> provider=... status=...` line per send request, and one `will-call origin=<ip:port> method=... path=... status=...` line per Will Call request (rejected ones too; the query is never logged).
+- **PciProxy:** one `send id=... from=<ip:port> provider=... status=... tokenizer_ms=... provider_ms=...` line per send request, and one `will-call id=... from=<ip:port> method=... path=... status=...` line per Will Call request (rejected ones too; the query is never logged), plus `will-call-rewrite id=... values=N tokens=M` when markers were replaced.
 - **Forwarder:** one access-log line per request (two for a `CONNECT`, see below), in UTC, as
-  `[time] from=<ip:port> METHOD host:port/path -> upstream-address status ua=User-Agent`. In `egress` mode:
+  `[time] id=<request id> from=<ip:port> METHOD host:port/path -> upstream-address status ua=User-Agent`. In `egress` mode:
   - the plain provider's calls show in full, the raw account number included:
     `GET plain-provider.localhost:5200/validate-transaction?bankAccountNumber=012345678901234567 -> 192.168.127.254:5200 200 ua=-`
     (`ua=-` is the adapters' .NET `HttpClient`, which sends no User-Agent; the address is the Mac host as
@@ -293,14 +301,14 @@ sees the Podman gateway (`192.168.127.1`), not `127.0.0.1`: a caller on the host
 
 In `on` mode, read an adapter's log like this:
 
-- Each request that carries a marker logs two `-->` / `<--` pairs. The first,
-  `--> POST http://plain-provider.localhost:5200/create-transaction {... "bankAccountNumber":"{{pci:ba:Y000000000000001}}"}`,
+- Each request that carries a marker logs two `out` / `res` pairs (same `id=`). The first,
+  `out id=... method=POST url=http://plain-provider.localhost:5200/create-transaction body={... "bankAccountNumber":"{{pci:ba:Y000000000000001}}"}`,
   is the logical request, to the provider's own URL, even though the request is re-sent to the proxy. The
-  second, `--> POST http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send {...}`, is the real
-  call. The pairs are nested, not sequential: `-->` logical, `-->` real, `<--` real, `<--` logical.
+  second, `out id=... method=POST url=http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send body={...}`, is the real
+  call. The pairs are nested, not sequential: `out` logical, `out` real, `res` real, `res` logical.
 - For the PlainAdapter's validate `GET` the marker is in the query string of the first line, and in the
   second only in the `X-Proxy-Url` header, which the log does not print: that line is just
-  `--> GET http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send`.
+  `out id=... method=GET url=http://pci-proxy.localhost:5700/api/t/sandbox/providers/plain-provider/send body=`.
 - An adapter returns only the status, the body and the content type of what it received. `X-Proxy-Outcome`
   and `X-Proxy-Code` are not among them: to see them, call the PCI Proxy directly (see the send endpoint).
 

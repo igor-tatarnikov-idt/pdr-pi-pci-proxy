@@ -9,7 +9,7 @@ app.UseRequestLogging("EncryptedProvider");
 
 IResult Invalid(string reason, string? plaintext = null)
 {
-    log.LogWarning("rejected: {Reason}{Plaintext}", reason, plaintext is null ? "" : ": " + plaintext);
+    log.LogWarning("rejected id={Id} reason={Reason}{Plaintext}", RequestId.Current, reason, plaintext is null ? "" : ": " + plaintext);
     return Results.Problem(statusCode: StatusCodes.Status400BadRequest, title: "Invalid request");
 }
 
@@ -51,7 +51,7 @@ async Task<(T? Value, IResult? Rejection)> ReadEncryptedAsync<T>(HttpRequest req
         return (null, Invalid($"not a valid {what}", plaintext));
     }
 
-    log.LogInformation("decrypted {What} {Plaintext}", what, plaintext);
+    log.LogInformation("decrypted id={Id} what={What} plaintext={Plaintext}", RequestId.Current, what, plaintext);
     return (value, null);
 }
 

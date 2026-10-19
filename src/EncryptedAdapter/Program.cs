@@ -16,6 +16,7 @@ builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configur
     .AddPciProxy(builder.Configuration);
 
 var app = builder.Build();
+app.UseRequestLogging("EncryptedAdapter");
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EncryptedAdapter");
 log.LogPciProxyMode(pciProxyMode, builder.Configuration);
 
@@ -43,7 +44,7 @@ async Task<IResult> SendPayloadAsync(IHttpClientFactory clients, string path, st
     var body = plaintextJson;
     if (pciProxyMode != PciProxyMode.On)
     {
-        log.LogInformation("plaintext {Json}", plaintextJson);
+        log.LogInformation("plaintext id={Id} json={Json}", RequestId.Current, plaintextJson);
         body = JsonSerializer.Serialize(new EncryptedEnvelope(PayloadCipher.Encrypt(plaintextJson)), envelopeOptions);
     }
     var response = await clients.CreateClient("provider")

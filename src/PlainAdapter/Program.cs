@@ -15,6 +15,7 @@ builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configur
     .AddPciProxy(builder.Configuration);
 
 var app = builder.Build();
+app.UseRequestLogging("PlainAdapter");
 app.Logger.LogPciProxyMode(pciProxyMode, builder.Configuration);
 
 // Detokenize the bank account the way adapters do today; the raw value is what goes to the provider.
