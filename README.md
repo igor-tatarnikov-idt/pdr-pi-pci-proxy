@@ -254,6 +254,11 @@ proxy keeps nothing.
 
 ## What to look for in the logs
 
+Where a request came from: the providers, the Tokenizer, the PCI Proxy and the Forwarder log the address and port of the peer that opened
+the connection (`from=127.0.0.1:54321` in the providers and the Tokenizer, `origin=127.0.0.1:54321` in the PCI Proxy, `from=` in the Forwarder).
+It is the peer's address, never an `X-Forwarded-For` value, which a caller could write itself. The Forwarder runs in a container, so it
+sees the Podman gateway (`192.168.127.1`), not `127.0.0.1`: a caller on the host cannot be told from another one by that address.
+
 - **PlainAdapter / EncryptedAdapter:** in `off` and `egress`, the call to the tokenizer with the
   placeholder token `Y000000000000001`, the raw account number that comes back, then the call to the
   provider. In `on` there is no tokenizer call: the provider call carries the marker, and is re-sent to the
@@ -264,11 +269,11 @@ proxy keeps nothing.
 - **EncryptedProvider:** the decrypted transaction (or `decrypted validation request`), or
   `rejected: <reason>` for a request it could not decrypt. The EncryptedAdapter also logs the
   `plaintext` it encrypted (not in `on`: it sends plain JSON and the proxy encrypts it).
-- **Tokenizer:** a `<-- POST /detokenize` line per call. In `on` mode the calls are the PCI Proxy's, one
+- **Tokenizer:** a `<-- POST /detokenize from=<origin> {"token":...}` line per call. In `on` mode the calls are the PCI Proxy's, one
   per distinct token of a request, and the adapters make none.
-- **PciProxy:** one `send ...` line per request, as above.
+- **PciProxy:** one `send origin=<ip:port> provider=... status=...` line per send request, and one `will-call origin=<ip:port> method=... path=... status=...` line per Will Call request (rejected ones too; the query is never logged).
 - **Forwarder:** one access-log line per request (two for a `CONNECT`, see below), in UTC, as
-  `[time] METHOD host:port/path -> upstream-address status ua=User-Agent`. In `egress` mode:
+  `[time] from=<ip:port> METHOD host:port/path -> upstream-address status ua=User-Agent`. In `egress` mode:
   - the plain provider's calls show in full, the raw account number included:
     `GET plain-provider.localhost:5200/validate-transaction?bankAccountNumber=012345678901234567 -> 192.168.127.254:5200 200 ua=-`
     (`ua=-` is the adapters' .NET `HttpClient`, which sends no User-Agent; the address is the Mac host as

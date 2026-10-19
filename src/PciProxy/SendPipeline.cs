@@ -48,7 +48,7 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
             }
         }
 
-        LogRequest(context.Request, providerId, failure?.Status ?? context.Response.StatusCode, failure?.Outcome ?? "Forwarded", failure?.Code, unexpected, timings);
+        LogRequest(context, providerId, failure?.Status ?? context.Response.StatusCode, failure?.Outcome ?? "Forwarded", failure?.Code, unexpected, timings);
         if (failure is not null)
         {
             throw failure;
@@ -254,14 +254,15 @@ public sealed class SendPipeline(ProviderProfiles profiles, TokenizerClient toke
             ? Encoding.UTF8.GetString(MarkerReplacer.Replace(Encoding.UTF8.GetBytes(text), rawByToken, percentEncode))
             : text;
 
-    // One line per request. It shows the host and the path of the original X-Proxy-Url with every marker as <marker>,
+    // One line per request, with the address it came from. It shows the host and the path of the original X-Proxy-Url with every marker as <marker>,
     // and never the query, a header, a body, a token or a raw value.
-    private void LogRequest(HttpRequest request, string providerId, int status, string outcome, string? code, string? unexpected, Timings timings)
+    private void LogRequest(HttpContext context, string providerId, int status, string outcome, string? code, string? unexpected, Timings timings)
     {
+        var request = context.Request;
         var (host, path) = DescribeUrl(request.Headers["X-Proxy-Url"]);
         _logger.LogInformation(
-            "send provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer={Tokenizer} provider={Provider}",
-            SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
+            "send origin={Origin} provider={ProviderId} method={Method} host={Host} path={Path} status={Status} outcome={Outcome} code={Code} error={Error} tokenizer={Tokenizer} provider={Provider}",
+            context.GetOrigin(), SafeProviderId(providerId), request.Method, host, path, status, outcome, code ?? "-", unexpected ?? "-", LogDuration(timings.Tokenizer), LogDuration(timings.Provider));
     }
 
     private static string LogDuration(TimeSpan? duration) => duration is { } elapsed ? Milliseconds(elapsed) + "ms" : "-";

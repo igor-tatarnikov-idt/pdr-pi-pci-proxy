@@ -50,6 +50,24 @@ public static class WillCallGateway
         });
     }
 
+    /// <summary>
+    /// One line per request, rejected ones included, with the address it came from: <c>will-call origin=... method=... path=... status=...</c>.
+    /// The query is not logged.
+    /// </summary>
+    public static async Task LogRequestAsync(HttpContext context, Func<Task> next)
+    {
+        try
+        {
+            await next();
+        }
+        finally
+        {
+            context.RequestServices.GetRequiredService<ILoggerFactory>().CreateLogger("PciProxy").LogInformation(
+                "will-call origin={Origin} method={Method} path={Path} status={Status}",
+                context.GetOrigin(), context.Request.Method, context.Request.Path, context.Response.StatusCode);
+        }
+    }
+
     /// <summary>A request that has marker syntax anywhere (path, query, header values, body) is refused: see <see cref="MarkerRequestGuard"/>.</summary>
     public static async Task RejectMarkersAsync(HttpContext context, Func<Task> next)
     {

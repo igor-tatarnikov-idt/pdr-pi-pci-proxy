@@ -41,6 +41,6 @@ app.Map("/api/t/{tenantId}/providers/{providerId}/send", async (HttpContext cont
     }
 });
 
-app.MapReverseProxy(pipeline => pipeline.Use(WillCallGateway.RejectMarkersAsync));
+app.MapReverseProxy(pipeline => pipeline.Use(WillCallGateway.LogRequestAsync).Use(WillCallGateway.RejectMarkersAsync));
 
 app.Run();
