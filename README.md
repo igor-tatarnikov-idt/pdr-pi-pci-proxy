@@ -428,3 +428,17 @@ tokenizer that is down or a malformed marker makes the whole response `500` with
 MARKER_SYNTAX`. The proxy asks for uncompressed responses and sends `X-Forwarded-Prefix: /will-call`, which the adapter's Swagger
 document uses as its server URL. Not done, left from the PDR: the list routes that drop unresolved items, authentication, a body
 size limit. `scripts/smoke.sh will-call` checks it all (`PCI_PROXY_MODE` is the adapter's mode).
+
+### HTTP rules (RFC 9110 and 9111)
+
+Both the send endpoint and the Will Call route: add `Via: 1.1 pci-proxy` to the response (after the provider's own `Via`; no `Via` is
+added to the request the provider receives, as the PDR wants no added headers there), answer `TRACE` with `405` and `Allow`, and drop
+the response headers that the provider's `Connection` field lists. The Will Call route also: marks every rewritten response `Cache-Control: no-store`
+and drops the upstream's `ETag`, `Content-MD5` and `Digest` headers (they describe the bytes before the rewrite); removes `Range` and `If-Range`
+from the request and answers a `206` or a compressed (`Content-Encoding`) JSON body with `500 PROXY_ERROR`; leaves a `HEAD` response's
+`Content-Length` alone; rewrites an upstream `Location` or `Content-Location` (relative, or absolute on the adapter's own host) to
+`/will-call/...`. A `GET`, `HEAD`, `OPTIONS` or `TRACE` that has a content header but no body is sent to the provider without content.
+
+Known limit: the headers a request's `Connection` field lists are dropped before forwarding, but Kestrel reduces a `Connection` value
+that contains `close` or `keep-alive` to just that token, so `Connection: close, X-Foo` still forwards `X-Foo`. It works when the field
+lists only custom names (`Connection: X-Foo`). Not done: forwarding of `1xx` interim responses, `Max-Forwards`.
