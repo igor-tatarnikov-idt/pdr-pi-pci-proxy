@@ -5,15 +5,15 @@
 cd "$(dirname "$0")/.." || exit 1
 
 CERT=certs/sandbox.crt
-TOKENIZER=http://127.0.0.1:5100
-PLAIN_PROVIDER=http://127.0.0.1:5200
-ENC_PROVIDER=https://127.0.0.1:5300
-PLAIN_ADAPTER=http://127.0.0.1:5400
-ENC_ADAPTER=http://127.0.0.1:5500
-FORWARDER=http://127.0.0.1:5600
-FORWARDER_ADMIN=http://127.0.0.1:5601
-PCI_PROXY=${PCI_PROXY:-http://127.0.0.1:5700}
-WILL_CALL_ADAPTER=http://127.0.0.1:5800
+TOKENIZER=http://tokenizer.localhost:5100
+PLAIN_PROVIDER=http://plain-provider.localhost:5200
+ENC_PROVIDER=https://encrypted-provider.localhost:5300
+PLAIN_ADAPTER=http://plain-adapter.localhost:5400
+ENC_ADAPTER=http://encrypted-adapter.localhost:5500
+FORWARDER=http://forwarder.localhost:5600
+FORWARDER_ADMIN=http://forwarder.localhost:5601
+PCI_PROXY=${PCI_PROXY:-http://pci-proxy.localhost:5700}
+WILL_CALL_ADAPTER=http://will-call-adapter.localhost:5800
 SEND=$PCI_PROXY/api/t/sandbox/providers
 # The mode the adapters were started in (PciProxy__Mode); the forwarder group expects the Forwarder log to match it.
 PCI_PROXY_MODE=${PCI_PROXY_MODE:-off}
