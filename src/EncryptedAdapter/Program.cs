@@ -12,7 +12,8 @@ builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configu
     .AddOutboundLogging("EncryptedAdapter");
 builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configuration.GetBaseUri("Provider:BaseUrl"))
     .AddOutboundLogging("EncryptedAdapter")
-    .ConfigureProviderHandler(builder.Configuration, builder.Environment.ContentRootPath);
+    .ConfigureProviderHandler(builder.Configuration, builder.Environment.ContentRootPath)
+    .AddPciProxy(builder.Configuration);
 
 var app = builder.Build();
 var log = app.Services.GetRequiredService<ILoggerFactory>().CreateLogger("EncryptedAdapter");
@@ -30,26 +31,36 @@ async Task<string> DetokenizeBankAccountAsync(IHttpClientFactory clients)
     return detokenized!.Value;
 }
 
-// Encrypts the whole payload and posts it to the provider as {"payload":"<base64>"}.
-async Task<IResult> SendEncryptedAsync(IHttpClientFactory clients, string path, string plaintextJson)
+// The bank account for the provider's payload. In 'on' mode that is the marker, for the PCI Proxy to replace, and the
+// tokenizer is not called; otherwise it is the raw value.
+async Task<string> BankAccountAsync(IHttpClientFactory clients) =>
+    pciProxyMode == PciProxyMode.On ? PciMarker.ForBankAccount(BankAccountToken) : await DetokenizeBankAccountAsync(clients);
+
+// Posts the payload to the provider, encrypted as {"payload":"<base64>"}. In 'on' mode it goes as plaintext JSON instead:
+// the PCI Proxy replaces the marker and encrypts it.
+async Task<IResult> SendPayloadAsync(IHttpClientFactory clients, string path, string plaintextJson)
 {
-    log.LogInformation("plaintext {Json}", plaintextJson);
-    var envelope = JsonSerializer.Serialize(new EncryptedEnvelope(PayloadCipher.Encrypt(plaintextJson)), envelopeOptions);
+    var body = plaintextJson;
+    if (pciProxyMode != PciProxyMode.On)
+    {
+        log.LogInformation("plaintext {Json}", plaintextJson);
+        body = JsonSerializer.Serialize(new EncryptedEnvelope(PayloadCipher.Encrypt(plaintextJson)), envelopeOptions);
+    }
     var response = await clients.CreateClient("provider")
-        .PostAsync(path, new StringContent(envelope, Encoding.UTF8, "application/json"));
+        .PostAsync(path, new StringContent(body, Encoding.UTF8, "application/json"));
     return await response.ToResultAsync();
 }
 
 app.MapPost("/create-transaction", async (IHttpClientFactory clients) =>
 {
-    var transaction = new Transaction("T-002-encrypted", 25.50m, "USD", "John Smith", "Jane Doe", await DetokenizeBankAccountAsync(clients));
-    return await SendEncryptedAsync(clients, "create-transaction", JsonSerializer.Serialize(transaction, JsonSerializerOptions.Web));
+    var transaction = new Transaction("T-002-encrypted", 25.50m, "USD", "John Smith", "Jane Doe", await BankAccountAsync(clients));
+    return await SendPayloadAsync(clients, "create-transaction", JsonSerializer.Serialize(transaction, JsonSerializerOptions.Web));
 });
 
 app.MapPost("/validate-transaction", async (IHttpClientFactory clients) =>
 {
-    var request = new ValidateRequest(await DetokenizeBankAccountAsync(clients));
-    return await SendEncryptedAsync(clients, "validate-transaction", JsonSerializer.Serialize(request, JsonSerializerOptions.Web));
+    var request = new ValidateRequest(await BankAccountAsync(clients));
+    return await SendPayloadAsync(clients, "validate-transaction", JsonSerializer.Serialize(request, JsonSerializerOptions.Web));
 });
 
 app.MapGet("/balance", async (IHttpClientFactory clients) =>

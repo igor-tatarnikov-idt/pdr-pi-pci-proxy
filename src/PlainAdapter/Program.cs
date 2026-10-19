@@ -11,7 +11,8 @@ builder.Services.AddHttpClient("tokenizer", c => c.BaseAddress = builder.Configu
     .AddOutboundLogging("PlainAdapter");
 builder.Services.AddHttpClient("provider", c => c.BaseAddress = builder.Configuration.GetBaseUri("Provider:BaseUrl"))
     .AddOutboundLogging("PlainAdapter")
-    .ConfigureProviderHandler(builder.Configuration, builder.Environment.ContentRootPath);
+    .ConfigureProviderHandler(builder.Configuration, builder.Environment.ContentRootPath)
+    .AddPciProxy(builder.Configuration);
 
 var app = builder.Build();
 app.Logger.LogPciProxyMode(pciProxyMode, builder.Configuration);
@@ -25,9 +26,21 @@ async Task<string> DetokenizeBankAccountAsync(IHttpClientFactory clients)
     return detokenized!.Value;
 }
 
+// The bank account as the provider's request carries it. In 'on' mode that is the marker, for the PCI Proxy to replace, and
+// the tokenizer is not called; otherwise it is the raw value. A query string gets it percent-encoded.
+async Task<string> BankAccountAsync(IHttpClientFactory clients, bool inQueryString = false)
+{
+    if (pciProxyMode == PciProxyMode.On)
+    {
+        return inQueryString ? PciMarker.ForUrl(BankAccountToken) : PciMarker.ForBankAccount(BankAccountToken);
+    }
+    var account = await DetokenizeBankAccountAsync(clients);
+    return inQueryString ? Uri.EscapeDataString(account) : account;
+}
+
 app.MapPost("/create-transaction", async (IHttpClientFactory clients) =>
 {
-    var transaction = new Transaction("T-001-plain", 25.50m, "USD", "John Smith", "Jane Doe", await DetokenizeBankAccountAsync(clients));
+    var transaction = new Transaction("T-001-plain", 25.50m, "USD", "John Smith", "Jane Doe", await BankAccountAsync(clients));
     var json = JsonSerializer.Serialize(transaction, JsonSerializerOptions.Web);
 
     var response = await clients.CreateClient("provider")
@@ -38,9 +51,9 @@ app.MapPost("/create-transaction", async (IHttpClientFactory clients) =>
 // This provider validates over GET and takes the raw bank account number in the query string.
 app.MapPost("/validate-transaction", async (IHttpClientFactory clients) =>
 {
-    var account = await DetokenizeBankAccountAsync(clients);
+    var account = await BankAccountAsync(clients, inQueryString: true);
     var response = await clients.CreateClient("provider")
-        .GetAsync($"validate-transaction?bankAccountNumber={Uri.EscapeDataString(account)}");
+        .GetAsync($"validate-transaction?bankAccountNumber={account}");
     return await response.ToResultAsync();
 });
 
