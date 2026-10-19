@@ -76,6 +76,102 @@ nothing. The Forwarder container cannot see the Mac's loopback, so `scripts/forw
 same two names, pointing at the Mac host (the Forwarder and the adapters have to agree on the provider
 names). The tokenizer stays at `http://127.0.0.1:5100` and is never called through the Forwarder.
 
+## Demo
+
+Two setups and one curl set cover the demo: the PlainAdapter and the EncryptedAdapter with the PCI Proxy **off** and **on**, the Will Call
+adapter called directly (mode off) and through the PCI Proxy (mode on), and the Will Call Swagger exposed by the PCI Proxy. It needs
+.NET 10 and Podman (for the Forwarder; without it `off` and the Will Call calls still work), and `jq` for the Swagger step.
+
+| Setup script | What it starts |
+|---|---|
+| `scripts/demo-off.sh` | Everything, with every adapter in **`off`**: the adapters call the tokenizer and send the **raw** account number to their providers; the Will Call adapter returns **raw** numbers to whoever calls it, so you call it directly. |
+| `scripts/demo-on.sh` | Everything, with every adapter in **`on`**: the adapters never call the tokenizer and send a **marker** to the PCI Proxy, which detokenizes (and, for the encrypted provider, encrypts) and calls the provider; the Will Call adapter returns **markers**, so you call it through the PCI Proxy, which puts the raw numbers back. |
+
+Each is `scripts/run-all.sh` with `PciProxy__Mode` set. Start one, wait for the apps' `Application started` lines, and run the curls in a
+second terminal; stop it with Ctrl+C. Run **one setup at a time** (they use the same ports).
+
+```bash
+scripts/demo-off.sh            # terminal 1
+scripts/demo-curl.sh off       # terminal 2: the whole curl set below, with a note per call
+```
+
+```bash
+scripts/demo-on.sh             # terminal 1
+scripts/demo-curl.sh on        # terminal 2
+```
+
+Every curl sends `X-Request-Id: demo-<case>`, so `scripts/logs.sh --id demo-<case>` shows that one call in every app (next section).
+
+### Curl set, mode off (`scripts/demo-off.sh`)
+
+```bash
+# PlainAdapter: the adapter calls the tokenizer, then the provider with the raw number
+curl -i -X POST http://plain-adapter.localhost:5400/create-transaction   -H 'X-Request-Id: demo-plain-create'
+curl -i -X POST http://plain-adapter.localhost:5400/validate-transaction -H 'X-Request-Id: demo-plain-validate'
+curl -i         http://plain-adapter.localhost:5400/balance              -H 'X-Request-Id: demo-plain-balance'
+
+# EncryptedAdapter: the adapter detokenizes and encrypts the payload itself
+curl -i -X POST http://encrypted-adapter.localhost:5500/create-transaction   -H 'X-Request-Id: demo-enc-create'
+curl -i -X POST http://encrypted-adapter.localhost:5500/validate-transaction -H 'X-Request-Id: demo-enc-validate'
+curl -i         http://encrypted-adapter.localhost:5500/balance              -H 'X-Request-Id: demo-enc-balance'
+
+# Will Call, direct (mode off: the adapter detokenizes): raw account numbers in the answer
+curl -i http://will-call-adapter.localhost:5800/lookup-transactions -H 'X-Request-Id: demo-willcall-direct'
+# Will Call through the PCI Proxy: the same answer
+curl -i http://pci-proxy.localhost:5700/will-call/lookup-transactions -H 'X-Request-Id: demo-willcall-proxy'
+```
+
+What to see: in the PlainProvider's and EncryptedProvider's lines the raw `bankAccountNumber` (`012345678901234567`), preceded by the adapter's own
+`/detokenize` call to the Tokenizer. Nothing goes to the PCI Proxy; the Forwarder is not used in `off`.
+
+### Curl set, mode on (`scripts/demo-on.sh`)
+
+The adapters' and Will Call curls are the same as above; only what happens behind them changes:
+
+```bash
+# PlainAdapter, EncryptedAdapter: the same six curls as in mode off
+
+# Will Call, direct: the adapter returns MARKERS ("bankAccountNumber":"{{pci:ba:Y000000000000002}}"), never a raw number
+curl -i http://will-call-adapter.localhost:5800/lookup-transactions -H 'X-Request-Id: demo-willcall-direct'
+# Will Call through the PCI Proxy: it replaces each marker with a raw number from the Tokenizer
+curl -i http://pci-proxy.localhost:5700/will-call/lookup-transactions -H 'X-Request-Id: demo-willcall-proxy'
+```
+
+What to see: the adapters' `out` lines carry a marker (`{{pci:ba:...}}`), they make no `/detokenize` call, and the request is re-sent to the PCI Proxy
+(`.../providers/<id>/send`); the Tokenizer's `/detokenize` call comes from the PCI Proxy; the provider still receives the raw number (the EncryptedProvider
+logs the `decrypted` transaction: the proxy encrypted it); the `balance` calls have no marker and go through the Forwarder. For Will Call, the PCI Proxy logs
+`will-call-rewrite values=2 tokens=2`.
+
+### Will Call Swagger through the PCI Proxy (either mode)
+
+```bash
+curl -sS -L -o /dev/null -w 'HTTP %{http_code} %{content_type}\n' http://pci-proxy.localhost:5700/will-call/swagger
+curl -sS http://pci-proxy.localhost:5700/will-call/swagger/v1/swagger.json | jq '{title: .info.title, servers, paths: (.paths | keys)}'
+```
+
+Open `http://pci-proxy.localhost:5700/will-call/swagger` in a browser: it is the Will Call adapter's own Swagger UI, served by YARP under `/will-call`. Its document
+names `/will-call` as the server (from `X-Forwarded-Prefix`), so "Try it out" calls the PCI Proxy, and the answer comes back with raw numbers.
+
+### All the logs in one output, sorted by time
+
+`scripts/run-all.sh` (and so both setups) prints every app's output with an `[App]` prefix, as it arrives, and also writes each app's lines to
+`logs/<App>.log` (git-ignored, emptied at every start). `scripts/logs.sh` merges those files into one stream sorted by the `ts` of each entry (every app and
+the Forwarder write UTC ISO timestamps, so they sort as text):
+
+```bash
+scripts/logs.sh                          # everything, sorted: HH:mm:ss.fff  App  [request id] message with its values
+scripts/logs.sh --id demo-plain-create   # one request, through every app
+scripts/logs.sh --app PciProxy           # one app
+scripts/logs.sh --json | jq .            # the raw JSON lines, sorted
+```
+
+```
+20:33:57.003 PlainAdapter      [demo-plain-create] out method=POST url=http://127.0.0.1:5700/api/t/sandbox/providers/plain-provider/send body={...}
+20:33:57.110 Tokenizer         [demo-plain-create] in from=127.0.0.1:57149 method=POST target=/detokenize body={"token":"Y000000000000001"}
+20:33:57.192 PlainProvider     [demo-plain-create] in from=127.0.0.1:57155 method=POST target=/create-transaction body={...}
+20:33:57.200 PciProxy          [demo-plain-create] send from=127.0.0.1:57148 provider=plain-provider method=POST host=plain-provider.localhost:5200 ...
+```
+
 ## The modes: `off`, `egress` and `on`
 
 `PciProxy:Mode` in an adapter's `appsettings.json` (or `PciProxy__Mode` in the environment, in any
